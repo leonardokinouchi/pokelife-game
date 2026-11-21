@@ -91,7 +91,9 @@ async function connectRealtime(s) {
   if (!key || !window.RTCPeerConnection) return;
   let link;
   try {
-    const peer = new RTCPeerConnection();
+    const peer = new RTCPeerConnection({
+      iceServers:location.protocol === "https:" ? [{urls:"stun:stun.l.google.com:19302"}] : [],
+    });
     const channel = peer.createDataChannel("aurora");
     link = realtime = {peer, channel, pending:new Map()};
     channel.onclose = () => closeRealtime(link);
@@ -109,7 +111,7 @@ async function connectRealtime(s) {
     };
     await peer.setLocalDescription(await peer.createOffer());
     if (peer.iceGatheringState !== "complete") await new Promise(resolve => {
-      const timer = setTimeout(resolve, 800);
+      const timer = setTimeout(resolve, 1800);
       peer.addEventListener("icegatheringstatechange", () => {
         if (peer.iceGatheringState === "complete") { clearTimeout(timer); resolve(); }
       });
@@ -123,7 +125,7 @@ async function connectRealtime(s) {
     await peer.setRemoteDescription((await response.json()).answer);
     setTimeout(() => {
       if (channel.readyState !== "open") closeRealtime(link);
-    }, 3500);
+    }, 8000);
   } catch {
     if (link) closeRealtime(link);
   }
