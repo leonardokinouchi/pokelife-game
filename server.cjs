@@ -16,7 +16,8 @@ const { createHash } = require("node:crypto");
 const storage = path.join(process.env.LOCALAPPDATA || require("node:os").homedir(),
   "ExpedicaoAurora", createHash("sha256").update(__dirname).digest("hex").slice(0, 12),
   String(Number(process.env.PORT || 4173)));
-const cloudRooms = Boolean(process.env.VERCEL || process.env.AURORA_RTC_COMPANION === "1");
+const rtcCompanion = process.env.AURORA_RTC_COMPANION === "1";
+const cloudRooms = Boolean(process.env.VERCEL || rtcCompanion);
 if (!cloudRooms) fs.mkdirSync(storage, { recursive: true });
 const savePath = code => path.join(storage, code + ".sav");
 
@@ -270,6 +271,7 @@ async function handleRequest(req, res) {
       }
       const input = req.body ?? body;
       const d = typeof input === "string" || Buffer.isBuffer(input) ? JSON.parse(input) : input;
+      if (rtcCompanion && d.action !== "rtcOffer") return reply(res, 404, {});
       if (d.action === "rtcOffer") {
         if (process.env.AURORA_DISABLE_RTC === "1")
           return reply(res, 503, {error:"Transporte em tempo real indisponível."});
