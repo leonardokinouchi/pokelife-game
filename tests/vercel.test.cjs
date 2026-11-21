@@ -66,9 +66,14 @@ test("concurrent joins keep both trainers in the cloud room", async t => {
   const postOffer = () => fetch(apiUrl, {
     method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(offer),
   });
+  const previousOrigin = process.env.AURORA_RTC_ORIGIN;
+  delete process.env.AURORA_RTC_ORIGIN;
+  t.after(() => {
+    if (previousOrigin === undefined) delete process.env.AURORA_RTC_ORIGIN;
+    else process.env.AURORA_RTC_ORIGIN = previousOrigin;
+  });
   assert.equal((await postOffer()).status, 503);
   process.env.AURORA_RTC_ORIGIN = "https://rtc.example.test";
-  t.after(() => delete process.env.AURORA_RTC_ORIGIN);
   const realFetch = globalThis.fetch;
   t.mock.method(globalThis, "fetch", (url, options) => {
     if (String(url) !== "https://rtc.example.test/api") return realFetch(url, options);
