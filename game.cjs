@@ -3,7 +3,8 @@ const rules = require("./rules.cjs");
 const { BattleSession } = require("./battle.cjs");
 const { isQuiz, newMillion, millionOptions, recordAnswer, advanceMillion, millionView } = require("./million.cjs");
 const { isPairMinigame, newPairGame, pairAction, pairView, practicePair } = require("./pair-minigames.cjs");
-const minigames = ["market", "auction", "race", "million", "darkAuction", "pokemonQuiz", "wires", "guess"];
+const { arcadeGames, newArcade, beginArcade, arcadeAction, arcadeView } = require("./arcade.cjs");
+const minigames = ["market", "auction", "race", "million", "darkAuction", "pokemonQuiz", "wires", "guess", ...arcadeGames];
 const eligibleMinigames = count => minigames.filter(kind => !isPairMinigame(kind) || validPlayerCount(count));
 const isAuction = kind => kind === "auction" || kind === "darkAuction";
 const auctionDuration = 10000;
@@ -404,6 +405,7 @@ function view(r, p) {
     auction: r.phase === "minigame" && isAuction(r.minigame) ? auctionView(r) : null,
     minigameOptions: r.phase === "minigame" ? eligibleMinigames(r.players.length) : null,
     pairGame: r.phase === "minigame" && isPairMinigame(r.minigame) ? pairView(r, p) : null,
+    arcade: r.phase === "minigame" && arcadeGames.includes(r.minigame) ? arcadeView(r, p) : null,
     million: r.phase === "minigame" && isQuiz(r.minigame) ? millionView(r.million, p) : null,
     quiz: r.phase === "minigame" && (!r.minigame || r.minigame === "market") && !p.done
       ? { a: p.quiz.a, b: p.quiz.b } : null,
@@ -507,6 +509,11 @@ function startMinigame(r, roll = randomInt) {
   delete r.million;
   delete r.auction;
   delete r.pairGame;
+  delete r.arcade;
+  if (arcadeGames.includes(r.minigame)) {
+    r.arcade = newArcade(r);
+    return;
+  }
   if (isPairMinigame(r.minigame)) {
     r.pairGame = newPairGame(r);
     return;
@@ -607,6 +614,13 @@ function advancePractice(r) {
   const bot = r.players.find(p => p.id === r.practiceBot);
   const human = r.players.find(p => p.id !== bot.id);
   if (r.miniReady.length < r.players.length || bot.done) return;
+  if (arcadeGames.includes(r.minigame)) {
+    if (r.arcade.results && human.done) {
+      command(r, bot, "arcadeContinue");
+      return true;
+    }
+    return false;
+  }
   if (isPairMinigame(r.minigame)) {
     if (r.pairGame.finished && human.done) {
       command(r, bot, "pairContinue");
@@ -1394,6 +1408,8 @@ function execute(r, p, k, d = {}) {
         r.million.deadline = Date.now() + 45000;
       if (isPairMinigame(r.minigame) && r.miniReady.length === r.players.length)
         r.pairGame.deadline = Date.now() + 60000;
+      if (arcadeGames.includes(r.minigame) && r.miniReady.length === r.players.length)
+        beginArcade(r);
       if (isAuction(r.minigame)) advanceAuction(r);
       return;
     }
@@ -1411,6 +1427,14 @@ function execute(r, p, k, d = {}) {
         p.done = true;
         next(r);
       } else pairAction(r, p, k, d);
+      return;
+    }
+    if (arcadeGames.includes(r.minigame)) {
+      if (r.arcade.results) {
+        check(k === "arcadeContinue", "O minigame terminou.");
+        p.done = true;
+        next(r);
+      } else arcadeAction(r, p, k, d);
       return;
     }
     if (isQuiz(r.minigame)) {

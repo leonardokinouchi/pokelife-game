@@ -6,6 +6,7 @@ const { randomInt, randomUUID } = require("node:crypto");
 const { player, newRoom, view, command, advanceRace, advanceAuction, advancePractice, startMinigame, minigames } = require("./game.cjs");
 const { advanceMillion } = require("./million.cjs");
 const { advancePairGame } = require("./pair-minigames.cjs");
+const { advanceArcade } = require("./arcade.cjs");
 const { avatars, maxPlayers } = require("./public/world.js");
 const rooms = new Map(),
   root = path.join(__dirname, "public");
@@ -89,11 +90,9 @@ function reply(res, status, value) {
 }
 function answer(status, value) { return { status, value }; }
 
-function handleAction(req, d, roomCode, r, save) {
+function handleAction(d, roomCode, r, save) {
   let p;
   if (d.action === "practice") {
-    if (process.env.VERCEL || !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress))
-      return answer(403, { error: "Página de testes disponível neste computador." });
     const kind = minigames.indexOf(d.kind);
     if (kind < 0) throw Error("Minigame inválido.");
     p = player("Você");
@@ -143,7 +142,7 @@ function handleAction(req, d, roomCode, r, save) {
     else save(null);
     return answer(200, { left: true });
   }
-  if (advanceRace(r) || advanceMillion(r) || advanceAuction(r) || advancePairGame(r)) save(r);
+  if (advanceRace(r) || advanceMillion(r) || advanceAuction(r) || advancePairGame(r) || advanceArcade(r)) save(r);
   let result;
   if (d.action !== "state") {
     result = command(r, p, d.action, d);
@@ -162,7 +161,7 @@ function newCode(action) {
   return Array.from({ length: 5 }, () => alphabet[randomInt(alphabet.length)]).join("");
 }
 
-async function processRequest(req, d) {
+async function processRequest(d) {
   const creating = d.action === "create" || d.action === "practice";
   if (!creating && (typeof d.code !== "string" || !/^(?:[A-Z2-9]{5}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/.test(d.code)))
     return answer(403, { error: "Sessão expirada." });
@@ -174,8 +173,9 @@ async function processRequest(req, d) {
       if (creating && entry) continue;
       let dirty = false, updated;
       const room = entry && unpack(entry.data);
-      const result = handleAction(req, d, code, room, value => { dirty = true; updated = value; });
-      if (!dirty || await commit(code, entry?.version || "", updated ? pack(updated) : null)) return result;
+      const result = handleAction(d, code, room, value => { dirty = true; updated = value; });
+      if (!dirty || await commit(code, entry?.version || "", updated ? pack(updated) : null, updated?.practiceExpires))
+        return result;
       continue;
     }
     const room = loadRoom(code);
@@ -187,7 +187,7 @@ async function processRequest(req, d) {
           fs.rmSync(savePath(code), { force: true });
         }
     }
-    return handleAction(req, d, code, room, value => {
+    return handleAction(d, code, room, value => {
       if (value) saveRoom(value);
       else {
         rooms.delete(code);
@@ -236,7 +236,7 @@ async function handleRequest(req, res) {
       }
       const input = req.body ?? body;
       const d = typeof input === "string" || Buffer.isBuffer(input) ? JSON.parse(input) : input;
-      const result = await processRequest(req, d);
+      const result = await processRequest(d);
       return reply(res, result.status, result.value);
     }
     const file =

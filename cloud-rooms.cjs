@@ -4,6 +4,7 @@ const compareAndSave = `
 local current = redis.call('GET', KEYS[1])
 if (current and string.sub(current, 1, 36) or '') ~= ARGV[1] then return 0 end
 if ARGV[2] == '' then redis.call('DEL', KEYS[1])
+elseif ARGV[3] ~= '' then redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3])
 else redis.call('SET', KEYS[1], ARGV[2]) end
 return 1`;
 
@@ -34,9 +35,10 @@ async function read(code) {
   return value && { version: value.slice(0, 36), data: Buffer.from(value.slice(36), "base64") };
 }
 
-async function commit(code, version, buffer) {
+async function commit(code, version, buffer, expiresAt) {
   const next = buffer ? randomUUID() + buffer.toString("base64") : "";
-  return (await redis(["EVAL", compareAndSave, 1, key(code), version, next])) === 1;
+  const ttl = expiresAt == null ? "" : String(Math.max(1, expiresAt - Date.now()));
+  return (await redis(["EVAL", compareAndSave, 1, key(code), version, next, ttl])) === 1;
 }
 
 module.exports = { read, commit };

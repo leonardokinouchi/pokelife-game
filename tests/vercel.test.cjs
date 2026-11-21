@@ -5,6 +5,7 @@ const http = require("node:http");
 test("concurrent joins keep both trainers in the cloud room", async t => {
   // Simulate two function invocations reading the same Redis revision.
   const records = new Map();
+  const expirations = new Map();
   let heldRead, synchronize = false, conflicts = 0;
   const redis = http.createServer(async (req, res) => {
     let body = "";
@@ -19,10 +20,13 @@ test("concurrent joins keep both trainers in the cloud room", async t => {
       }
     } else {
       assert.equal(op, "EVAL");
-      const [, , key, expected, value] = args;
+      const [, , key, expected, value, ttl] = args;
       result = Number((records.get(key) || "").slice(0, 36) === expected);
       if (!result) conflicts++;
-      else if (value) records.set(key, value);
+      else if (value) {
+        records.set(key, value);
+        expirations.set(key, ttl);
+      }
       else records.delete(key);
     }
     res.end(JSON.stringify({result}));
@@ -49,4 +53,12 @@ test("concurrent joins keep both trainers in the cloud room", async t => {
   const {state} = await action({action:"state", code, token:host.token});
   assert.deepEqual(state.players.map(p => p.name).sort(), ["Ana", "Bia", "Caio"]);
   assert.equal(conflicts, 1);
+  const prefix = "expedicao:" + (process.env.VERCEL_ENV || "development") + ":";
+  assert.equal(expirations.get(prefix + code), "");
+  const practice = await action({action:"practice", kind:"magnetic"});
+  const training = await action({action:"miniReady", ...practice});
+  assert.equal(training.state.minigame, "magnetic");
+  assert.ok(training.state.arcade.start);
+  const ttl = Number(expirations.get(prefix + practice.code));
+  assert.ok(ttl > 0 && ttl <= 30 * 60 * 1000);
 });

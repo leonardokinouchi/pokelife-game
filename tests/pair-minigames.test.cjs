@@ -14,7 +14,7 @@ function play(kind, count = 4) {
 
 test("pair minigames are only eligible for compatible player counts", () => {
   for (const count of [0, 1, 3, 5]) assert.ok(!eligibleMinigames(count).includes("wires") && !eligibleMinigames(count).includes("guess"));
-  for (const count of [2, 4, 6, 8, 10, 12]) assert.deepEqual(eligibleMinigames(count).slice(-2), ["wires", "guess"]);
+  for (const count of [2, 4, 6, 8, 10, 12]) assert.ok(["wires", "guess"].every(kind => eligibleMinigames(count).includes(kind)));
 });
 
 test("wires separate the roles and enforce order, timing, progress and timeout", () => {

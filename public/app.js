@@ -936,6 +936,10 @@ document.addEventListener("click", (e) => {
   }
   if (k === "dodge" && Date.now() + serverOffset < state.race.startsAt) return;
   if (k === "bid") d.amount = Number(v("auctionBid"));
+  if (k === "arcadeSelect" || k === "arcadeConfirm") {
+    selectArcadeCard(k === "arcadeSelect" ? d.choice : null);
+    return;
+  }
   if (k === "answer") {
     if (v("answer") === "") {
       toast("Digite um valor.");
@@ -1316,6 +1320,8 @@ const minigameNames = {
   million: "Show do Milhão - 999.000",
   pokemonQuiz: "Quem é esse Pokémon?",
   wires: "Cortes do Xurkitree", guess: "Adivinha",
+  magnetic: "Campo Magnético", rhythm: "Ritmo do Toxtricity", sorter: "Esteira da Pokébola",
+  elements: "Três Cartas", twentyOne: "21 da Equipe Rocket", claim: "Par ou Roubo",
 };
 const miniInstructions = {
   market: "Calcule o total da compra e envie sua resposta. Um acerto rende ₽ 180.",
@@ -1326,6 +1332,12 @@ const miniInstructions = {
   pokemonQuiz: "Identifique cinco Pokémon pelas silhuetas em 45 segundos. Quem acertar mais vence. Em caso de empate, quem terminar mais rápido fica na frente. Até três jogadores dividem ₽ 1.000.",
   wires: "Em dupla, cortem quatro fios na ordem indicada em até 60 segundos. Uma pessoa lê e envia as instruções. A outra vê e corta os fios. Um corte errado, fora da janela ou o fim do tempo provoca um choque.",
   guess: "Uma pessoa pega os papéis e repassa as pistas. A outra tenta identificar o Pokémon digitando o nome. Vocês têm 60 segundos e podem tentar quantas vezes quiserem. A primeira dupla a acertar ganha.",
+  magnetic: "Use as setas ou WASD para fugir das casas marcadas antes da descarga. Sobreviva por até 50 segundos.",
+  rhythm: "Aperte A, S, K ou L quando a nota da coluna cruzar a linha. Os combos dão pontos extras. A faixa dura 46 segundos.",
+  sorter: "Separe as bolas antes que caiam. Use 1 para Poké Bola, 2 para Grande Bola e 3 para Ultra Bola. A esteira acelera durante 45 segundos.",
+  elements: "Escolha uma carta por mão. Fogo vence Planta, Planta vence Água, Água vence Fogo. Receba +2 se tiver vantagem contra pelo menos um adversário. Cada carta é usada uma vez.",
+  twentyOne: "Use 1 para pedir ou 2 para parar e confirme com Enter. O Ás vale 1 ou 11. Ganha quem chegar mais perto de 21 sem estourar.",
+  claim: "Escolha uma carta da mesa. Se só você tentar pegá-la, ganha seus pontos. Se mais alguém escolher a mesma, ela fica na mesa valendo mais na próxima rodada. São quatro rodadas.",
 };
 let raceFrame = 0;
 const raceExitDelay = 900;
@@ -1469,17 +1481,19 @@ function spinRoulette(draw, options, selected, heading, onDone) {
   if (winner < 0) { onDone(); return; }
   const step = 360 / options.length;
   const stop = 5 * 360 - winner * step;
-  const colors = ["#1c5c47", "#753d5a", "#285573", "#79562a", "#4f4381", "#963f35", "#536125", "#784471"];
-  const sectors = options.map((_, i) => colors[i] + " " + i * step + "deg " + (i + 1) * step + "deg");
+  const colors = ["#1c5c47", "#753d5a", "#285573", "#79562a", "#4f4381", "#963f35", "#536125", "#784471",
+    "#286777", "#80512c", "#485c91", "#8b424e", "#3f6650", "#655085"];
+  const sectors = options.map((_, i) => colors[i % colors.length] + " " + i * step + "deg " + (i + 1) * step + "deg");
   const spinMs = matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 3200;
   draw.innerHTML = '<div class="draw-card roulette-card"><h2>' + esc(heading) + '</h2>' +
     '<div class="roulette" aria-hidden="true"><div class="roulette-pointer"></div>' +
-    '<div class="roulette-wheel' + (options.length > 6 ? ' roulette-wheel-dense' : '') +
+    '<div class="roulette-wheel' + (options.length > 10 ? ' roulette-wheel-numbered' :
+      options.length > 6 ? ' roulette-wheel-dense' : '') +
     '" style="--stop:' + stop + 'deg;--spin-duration:' + spinMs +
     'ms;--wheel:conic-gradient(from ' + (-step / 2) + 'deg,' + sectors.join(",") + ')">' +
     options.map(([, name], index) =>
       '<div class="roulette-sector" style="--angle:' + index * step + 'deg"><span>' +
-      esc(name) + '</span></div>').join("") +
+      (options.length > 10 ? index + 1 : esc(name)) + '</span></div>').join("") +
     '</div><div class="roulette-hub"></div></div>' +
     '<div class="roulette-result">Girando a roleta…</div></div>';
   draw.hidden = false;
@@ -1784,6 +1798,208 @@ function renderAuction(s) {
     '</strong>' + controls + '</div></div></div>';
 }
 
+const arcadeDirections = {ArrowUp:"up", w:"up", ArrowDown:"down", s:"down",
+  ArrowLeft:"left", a:"left", ArrowRight:"right", d:"right"};
+const arcadeKeys = {rhythm:["A","S","K","L"], sorter:["1","2","3"]};
+const arcadeBalls = ["poke-ball", "great-ball", "ultra-ball"];
+const arcadeBallNames = ["Poké Bola", "Grande Bola", "Ultra Bola"];
+let arcadeSelected = null;
+let arcadeSelectionKey = "";
+
+function selectArcadeCard(choice) {
+  const game = state?.arcade;
+  if (!game || game.events || !game.start || game.results || game.reveal || game.you.standing ||
+      game.you.choice !== null || Date.now() + serverOffset >= game.deadline ||
+      !$("roundDraw").hidden || busy) return;
+  if (choice === null) {
+    if (arcadeSelected !== null) act("arcadePick", {choice:arcadeSelected, round:game.round});
+  } else if (document.querySelector('[data-arcade-choice="' + choice + '"]')) {
+    arcadeSelected = choice;
+    for (const button of document.querySelectorAll("[data-arcade-choice]"))
+      button.setAttribute("aria-pressed", String(Number(button.dataset.arcadeChoice) === choice));
+    $("arcadeConfirm").disabled = false;
+  }
+}
+
+document.addEventListener("keydown", event => {
+  const game = state?.arcade;
+  if (!game?.start || game.results || game.reveal || !$("roundDraw").hidden || event.altKey ||
+      event.ctrlKey || event.metaKey || event.target.matches("input,textarea,select,[contenteditable]")) return;
+  const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+  if (state.minigame === "magnetic" && Object.hasOwn(arcadeDirections, key)) {
+    event.preventDefault();
+    if (game.you.alive && Date.now() + serverOffset < game.deadline)
+      act("arcadeMove", {direction:arcadeDirections[key]});
+  } else if (arcadeKeys[state.minigame]) {
+    const lane = arcadeKeys[state.minigame].indexOf(key.toUpperCase());
+    if (lane < 0 || event.repeat) return;
+    event.preventDefault();
+    if (Date.now() + serverOffset < game.deadline) act("arcadeTap", {lane});
+  } else if (!game.events && (["1", "2", "3", "Enter"].includes(key)) && !event.repeat &&
+      (key !== "Enter" || arcadeSelected !== null)) {
+    event.preventDefault();
+    selectArcadeCard(key === "Enter" ? null : Number(key) - 1);
+  }
+});
+
+function renderKeyboardArcade(s) {
+  let content;
+  if (s.minigame === "magnetic") {
+    content = '<div class="arcade-grid" aria-label="Arena magnética">' +
+      Array.from({length:25}, () => '<i></i>').join("") + s.players.map(p =>
+        '<div class="arcade-trainer" data-id="' + esc(p.id) + '" title="' + esc(p.name) + '">' +
+        trainerSprite(p.avatar, "", p.name) + '</div>').join("") + '</div>' +
+      '<div class="arcade-keys">' + [["↑","up"],["←","left"],["↓","down"],["→","right"]].map(([label,direction]) =>
+        btn(label, "arcadeMove", {direction})).join("") + '</div>';
+  } else if (s.minigame === "rhythm") {
+    content = '<div class="arcade-rhythm" aria-label="Pistas do ritmo"><div class="arcade-hit-line"></div>' +
+      arcadeKeys.rhythm.map((key, lane) => '<div class="arcade-lane" style="--lane:' + lane + '">' +
+        Array.from({length:5}, () => '<i hidden></i>').join("") + '</div>').join("") + '</div>' +
+      '<div class="arcade-keys">' + arcadeKeys.rhythm.map((key, lane) => btn(key, "arcadeTap", {lane})).join("") + '</div>';
+  } else {
+    content = '<div class="arcade-belt" aria-label="Esteira">' + arcadeBalls.map(ball =>
+      '<div class="arcade-ball" hidden>' + itemArt(ball) + '</div>').join("") + '</div>' +
+      '<div class="arcade-keys">' + arcadeBallNames.map((label, lane) =>
+        btn((lane + 1) + " · " + label, "arcadeTap", {lane})).join("") + '</div>';
+  }
+  return '<section class="arcade-panel" id="arcadeStage"><div class="arcade-hud"><strong></strong><span></span></div>' +
+    content + '</section>';
+}
+
+function animateKeyboardArcade(stage, initial) {
+  const {start, events} = initial.arcade;
+  const kind = initial.minigame;
+  const stats = stage.querySelector(".arcade-hud strong");
+  const timer = stage.querySelector(".arcade-hud span");
+  const cells = [...stage.querySelectorAll(".arcade-grid > i")];
+  const figures = new Map([...stage.querySelectorAll(".arcade-trainer")].map(node => [node.dataset.id, node]));
+  const lanes = [...stage.querySelectorAll(".arcade-lane")].map(node => [...node.children]);
+  const balls = [...stage.querySelectorAll(".arcade-ball")];
+  const tones = [180, 294, 392, 523];
+  let nextSound = events.findIndex(event => event.at >= Date.now() + serverOffset - start);
+  if (nextSound < 0) nextSound = events.length;
+  let cursor = initial.arcade.you.cursor;
+  let score = initial.arcade.you.score;
+  let wave = initial.arcade.round;
+
+  function frame() {
+    const game = state?.arcade;
+    if (!stage.isConnected || state?.phase !== "minigame" || game?.start !== start || game.results) return;
+    const now = Date.now() + serverOffset;
+    const elapsed = now - start;
+    const seconds = Math.max(0, Math.ceil((game.deadline - now) / 1000));
+    const clock = seconds + " s";
+    if (timer.textContent !== clock) timer.textContent = clock;
+    timer.classList.toggle("urgent", seconds <= 8);
+    const summary = kind === "magnetic" ? (game.you.alive ? game.players.filter(p => p.alive).length + " na arena" : "Eliminado") :
+      game.you.score + " pontos · Combo " + game.you.combo;
+    if (stats.textContent !== summary) stats.textContent = summary;
+    if (kind === "magnetic") {
+      const event = events[game.round];
+      const warning = event && elapsed >= event.at - event.warning;
+      cells.forEach((cell, index) => cell.classList.toggle("arcade-danger", Boolean(warning && event.danger.includes(index))));
+      for (const p of game.players) {
+        const figure = figures.get(p.id);
+        figure.hidden = !p.alive;
+        figure.style.left = (p.cell % 5 * 20 + 10) + "%";
+        figure.style.top = (Math.floor(p.cell / 5) * 20 + 10) + "%";
+        figure.classList.toggle("arcade-self", p.id === state.you.id);
+      }
+      if (game.round > wave) {
+        playNotes([[110,48,.15]]);
+        wave = game.round;
+      }
+    } else if (kind === "rhythm") {
+      const slots = [0,0,0,0];
+      for (let i = game.you.cursor; i < events.length && events[i].at <= elapsed + 1200; i++) {
+        const event = events[i];
+        const dot = lanes[event.lane][slots[event.lane]++];
+        if (!dot) continue;
+        dot.hidden = false;
+        dot.style.top = (83 - (event.at - elapsed) * .063) + "%";
+      }
+      for (let i = 0; i < lanes.length; i++)
+        for (let j = slots[i]; j < lanes[i].length; j++) lanes[i][j].hidden = true;
+      while (events[nextSound]?.at <= elapsed) {
+        const event = events[nextSound++];
+        if (elapsed - event.at < 95) playNotes([[tones[event.lane], tones[event.lane] * .82, .12]]);
+      }
+    } else {
+      const event = events[game.you.cursor];
+      const end = events[game.you.cursor + 1]?.at ?? game.deadline - start;
+      const active = event && elapsed >= event.at && elapsed < end;
+      balls.forEach((ball, i) => {
+        ball.hidden = !active || i !== event.lane;
+        if (!ball.hidden) ball.style.left = (9 + 82 * (elapsed - event.at) / (end - event.at)) + "%";
+      });
+    }
+    if (game.you.cursor > cursor) {
+      if (game.you.score > score) playNotes([[520,760,.08]]);
+      else if (game.you.combo === 0 && kind === "sorter") playNotes([[220,115,.09]]);
+      cursor = game.you.cursor;
+      score = game.you.score;
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+
+function arcadeCard(card) {
+  const icon = {Fogo:"◆", Água:"●", Planta:"▲"}[card.type];
+  return '<span class="arcade-card" data-type="' + esc(card.type) + '">' +
+    '<span aria-hidden="true">' + icon + '</span><b>' + card.value + '</b><small>' + esc(card.type) + '</small></span>';
+}
+
+function renderCardArcade(s) {
+  const game = s.arcade;
+  const kind = s.minigame;
+  const name = id => s.players.find(p => p.id === id)?.name;
+  const key = game.start + ":" + game.round;
+  if (arcadeSelectionKey !== key) {
+    arcadeSelectionKey = key;
+    arcadeSelected = null;
+  }
+  let board;
+  if (kind === "twentyOne") {
+    board = '<div class="arcade-hands">' + game.players.map(p => '<div><b>' + esc(name(p.id)) +
+      '</b><span>' + p.hand.map(rank => '<i>' + ([,"A",2,3,4,5,6,7,8,9,10,"J","Q","K"][rank]) + '</i>').join("") +
+      '</span><strong>' + (p.value > 21 ? p.value + " · Estourou" : p.value + (p.standing ? " · Parou" : "")) +
+      '</strong></div>').join("") + '</div>';
+  } else if (game.reveal) {
+    board = '<div class="arcade-cards">' + game.reveal.map(row => '<div>' + arcadeCard(row.card) +
+      '<small>' + esc(kind === "elements" ? name(row.id) + " · +" + row.points :
+        row.winner ? name(row.winner) : row.contested ? "Disputada · +1" : "Sem escolha") + '</small></div>').join("") + '</div>';
+  } else board = '';
+  const canChoose = !game.reveal && !game.you.standing && game.you.choice === null;
+  const cards = kind === "twentyOne" ? ["Pedir carta","Parar"] : kind === "elements" ? game.you.hand : game.table;
+  const choices = canChoose ? '<div class="arcade-cards">' + cards.map((card, choice) => card ?
+    '<button type="button" data-action="arcadeSelect" data-arcade-choice="' + choice + '" data-args="' +
+    esc(JSON.stringify({choice})) + '" aria-pressed="' + (arcadeSelected === choice) + '">' +
+    '<kbd>' + (choice + 1) + '</kbd>' + (typeof card === "string" ? esc(card) : arcadeCard(card)) + '</button>' : '').join("") +
+    '</div><button type="button" id="arcadeConfirm" class="primary" data-action="arcadeConfirm"' +
+    (arcadeSelected === null ? ' disabled' : '') + '>Confirmar</button>' : '';
+  const status = kind === "twentyOne" || game.reveal ? '' : '<p>' +
+    game.players.filter(p => p.ready).length + ' de ' + game.players.length + ' escolheram · ' + game.you.score + ' pontos</p>';
+  return '<section class="arcade-panel"><div class="arcade-hud"><strong>' +
+    (game.reveal ? "Cartas reveladas" : kind === "elements" ? "Mão " + (game.round + 1) + " de 3" :
+      kind === "claim" ? "Rodada " + (game.round + 1) + " de 4" : "Mesa aberta") +
+    '</strong>' + (!game.reveal ? '<span id="arcadeClock"></span>' : '') + '</div>' +
+    board + choices + status + (!canChoose && !game.reveal ? '<p>Aguardando a mesa…</p>' : '') + '</section>';
+}
+
+function renderArcade(s) {
+  const game = s.arcade;
+  if (!game.results) return game.events ? renderKeyboardArcade(s) : renderCardArcade(s);
+  const players = new Map(s.players.map(p => [p.id, p]));
+  return '<section class="arcade-panel"><h3>Resultado</h3><ol class="arcade-results">' + game.results.map(row => {
+    const p = players.get(row.id);
+    return '<li>' + trainerSprite(p.avatar, "") + '<b>' + esc(p.name) + '</b><span>' +
+      (row.score < 0 ? "Estourou" : row.score + (s.minigame === "magnetic" ? " · Sobrevivência" : " pontos")) +
+      (row.won ? ' · Venceu' : '') + '</span></li>';
+  }).join("") + '</ol>' + (s.you.done ? '<p>Aguardando o grupo…</p>' :
+    btn("Continuar", "arcadeContinue", {}, "primary")) + '</section>';
+}
+
 function renderMinigame(s) {
   const p = s.you;
   const screen = $("minigameScreen");
@@ -1792,6 +2008,7 @@ function renderMinigame(s) {
   if (s.million?.results && $("millionReveal") && millionRevealedKey !== s.million.deadline) return;
   screen.dataset.game = s.minigame;
   if (s.minigame === "race" && s.race && !raceResultReady(s.race) && $("raceTrack")) return;
+  if (s.arcade?.events && !s.arcade.results && $("arcadeStage")) return;
   const title = minigameNames[s.minigame];
   let content;
   if (s.miniReady && s.miniReady.length < s.players.length) {
@@ -1811,6 +2028,8 @@ function renderMinigame(s) {
     content = renderMillion(s);
   } else if (s.pairGame) {
     content = renderPairGame(s);
+  } else if (s.arcade) {
+    content = renderArcade(s);
   } else if (s.minigame === "market") {
     content = p.done
       ? '<div class="mini-result"><strong>' + esc(p.notice) + '</strong><p>Aguardando o grupo…</p></div>'
@@ -1827,6 +2046,10 @@ function renderMinigame(s) {
   if (auctionClock) updateMiniClock(auctionClock, s.auction.deadline);
   const pairClock = $("pairClock");
   if (pairClock) updateMiniClock(pairClock, s.pairGame.deadline);
+  const arcadeClock = $("arcadeClock");
+  if (arcadeClock) updateMiniClock(arcadeClock, s.arcade.deadline);
+  const arcadeStage = $("arcadeStage");
+  if (arcadeStage) animateKeyboardArcade(arcadeStage, s);
   const reveal = $("millionReveal");
   if (reveal) animateMillionReveal(reveal, s);
   if ($("raceTrack") && !raceFrame) raceFrame = requestAnimationFrame(animateRace);
@@ -2134,7 +2357,8 @@ function renderPersonalPanel() {
 initializeScreen();
 poll();
 function pollNext() {
-  poll().finally(() => setTimeout(pollNext, state?.minigame === "race" ? 85 : state?.pairGame ? 350 : 1100));
+  poll().finally(() => setTimeout(pollNext, state?.minigame === "race" ? 85 :
+    state?.arcade?.events ? 150 : state?.pairGame || state?.arcade ? 350 : 1100));
 }
 setTimeout(pollNext, 1100);
 
