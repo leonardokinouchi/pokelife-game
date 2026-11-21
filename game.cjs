@@ -103,13 +103,14 @@ const SHOP = {
   ),
 };
 const { Dex } = require("@pkmn/sim");
-const evolutionItems = new Set(
-  require("./data/rules.json")
-    .evolution.map((rule) => rule.heldItem)
-    .filter(Boolean),
-);
+const evolutionRules = require("./data/rules.json").evolution;
+const evolutionItems = new Set(evolutionRules.map(rule => rule.heldItem).filter(Boolean));
 for (const id of evolutionItems)
   SHOP[id] = { name: Dex.items.get(id).name || id, price: 650, held: true };
+for (const id of new Set(evolutionRules.filter(rule => rule.trigger === "use-item").map(rule => rule.item).filter(Boolean))) {
+  const name = Dex.items.get(id.replaceAll("-", "")).name || id.replaceAll("-", " ");
+  SHOP[id] = { ...SHOP[id], name: SHOP[id]?.name || name, price: SHOP[id]?.price || 700, category: "evolution" };
+}
 for (const item of Dex.items.all())
   if (item.megaStone)
     SHOP[item.id] = { name: item.name, price: 1600, category: "megaStone", held: true };
@@ -155,11 +156,11 @@ const itemSummaries = {
 };
 for (const [id, item] of Object.entries(SHOP)) {
   item.sprite = Object.hasOwn(itemSprites, id);
-  const data = Dex.items.get(id);
+  const data = Dex.items.get(id.replaceAll("-", ""));
   const megaForms = Object.values(data.megaStone || {});
   item.summary = itemSummaries[id] || (megaForms.length
     ? "Permite a Mega Evolução para " + megaForms.join(" ou ") + " quando equipada ao Pokémon compatível."
-    : data.shortDesc || data.desc || (item.held ? "Item para equipar em um Pokémon." : "Item da mochila."));
+    : item.category === "evolution" ? "Use em um Pokémon compatível para evoluí-lo." : data.shortDesc || data.desc || (item.held ? "Item para equipar em um Pokémon." : "Item da mochila."));
 }
 
 function evolutionListener(player) {
@@ -211,6 +212,7 @@ function freeSlot(p) {
   throw Error("As boxes estão cheias.");
 }
 const all = (p) => [...p.party, ...p.box];
+const captureBalls = ["poke-ball", "great-ball", "ultra-ball"];
 const learningMon = (p) => all(p).find((m) => m.pendingMoves?.length);
 const mon = (p, id) => {
   let m = all(p).find((m) => m.uid === id);
@@ -432,6 +434,11 @@ function beginRound(r, roll = randomInt) {
       if (p.walks > 5 && roll(100) < 80) addCard(r, p, "fatigue");
       if (!p.battled && p.party.length && roll(100) < 20)
         addCard(r, p, "lazy", p.party[roll(p.party.length)]);
+      if (!p.restartKitUsed && !p.party.length && !p.box.length && p.money < SHOP["poke-ball"].price &&
+          !captureBalls.some(ball => p.items[ball] > 0) && roll(100) < 50)
+        addCard(r, p, "restart-kit");
+      if (p.party.length >= 2 && roll(100) < 40) addCard(r, p, "quiet-camp");
+      if (roll(100) < 20) addCard(r, p, "dusk-expedition");
     }
     p.walks = 0;
     p.battled = false;
@@ -452,6 +459,12 @@ function resolveCard(r, p, id) {
     const target = all(p).find((m) => m.uid === card.target);
     if (target) target.unhappyWarningOwner = p.id;
   }
+  if (card.type === "restart-kit" && !p.restartKitUsed) {
+    grantPokeBall(p);
+    p.restartKitUsed = true;
+  }
+  if (card.type === "quiet-camp") p.quietCamp = { first: null, complete: false };
+  if (card.type === "dusk-expedition") p.duskExpedition = { complete: false };
   if (++r.cardIndex === r.cards.length) {
     r.phase = r.afterCards || "actions";
     delete r.afterCards;
@@ -465,6 +478,8 @@ function next(r) {
     r.cards = [];
     r.cardIndex = 0;
     for (const p of r.players) {
+      delete p.quietCamp;
+      delete p.duskExpedition;
       for (const m of all(p)) {
         m.happiness = Math.max(0, m.happiness - 2);
         if (m.happiness >= 100) {
@@ -868,6 +883,22 @@ function applyXP(r, p, target, activeUid) {
       (result.evolution ? " Evoluiu para " + result.evolution + "!" : "");
   }).join("");
 }
+function grantPokeBall(p) {
+  p.items["poke-ball"] = (p.items["poke-ball"] || 0) + 1;
+}
+
+function closeEncounter(p, message) {
+  const encounter = p.enc;
+  const mission = p.duskExpedition;
+  if (mission && !mission.complete && encounter.type === "wild" && encounter.period === "dusk") {
+    grantPokeBall(p);
+    mission.complete = true;
+    message += " Expedição ao entardecer concluída! Você recebeu 1 Poké Bola.";
+  }
+  p.notice = message;
+  p.enc = null;
+}
+
 function finishEncounter(r, p) {
   const enc = p.enc,
     v = enc.battle.view("p1");
@@ -899,13 +930,12 @@ function finishEncounter(r, p) {
     delete p.eliteRun;
     message += " A sequência foi encerrada.";
   }
-  p.notice = message;
-  p.enc = null;
+  closeEncounter(p, message);
 }
 function takeAction(r, p, k, d) {
   const eliteInterval = p.eliteRun != null;
   check(
-    !p.done && !p.enc && (p.actions > 0 || eliteInterval),
+    !p.done && !p.enc && (p.actions > 0 || eliteInterval || k === "item"),
     "Conclua o encontro ou avance o turno.",
   );
   const town = /^(city|village)/.test(p.loc);
@@ -1011,13 +1041,23 @@ function takeAction(r, p, k, d) {
     if (elite) p.eliteRun ??= 0;
   } else if (k === "pet") {
     const m = mon(p, d.uid);
-    m.happiness = Math.min(255, m.happiness + 25);
+    const camp = p.quietCamp;
+    let bonus = 0;
+    if (camp && !camp.complete && p.party.includes(m)) {
+      if (camp.first === null) camp.first = m.uid;
+      else if (camp.first !== m.uid) {
+        camp.complete = true;
+        bonus = 10;
+      }
+    }
+    m.happiness = Math.min(255, m.happiness + 25 + bonus);
     p.petsGiven = (p.petsGiven ?? 0) + 1;
     if (!p.dex.includes(m.speciesId)) p.dex.push(m.speciesId);
     p.notice = m.name + " ficou mais feliz.";
+    if (bonus) p.notice += " Acampamento tranquilo concluído!";
   } else if (k === "item") {
     const m = mon(p, d.uid);
-    check((p.items[d.item] || 0) > 0, "Item indisponível.");
+    check(Object.hasOwn(SHOP, d.item) && (p.items[d.item] || 0) > 0, "Item indisponível.");
     if (d.item === "potion") {
       check(m.hp > 0 && m.hp < m.maxhp, "Escolha um Pokémon ferido.");
       m.hp = Math.min(m.maxhp, m.hp + 20);
@@ -1026,7 +1066,7 @@ function takeAction(r, p, k, d) {
       m.heldItem = d.item;
     } else {
       check(
-        d.item.endsWith("-stone") &&
+        SHOP[d.item].category === "evolution" &&
           rules.evolve(m, "use-item", { ...evoContext(p), item: d.item }),
         "Esse item não evolui este Pokémon.",
       );
@@ -1035,7 +1075,7 @@ function takeAction(r, p, k, d) {
     p.items[d.item]--;
     p.notice = "Item utilizado.";
   } else throw Error("Ação desconhecida.");
-  if (!eliteInterval) p.actions--;
+  if (!eliteInterval && k !== "item") p.actions--;
 }
 function asset(p, a) {
   check(a && ["money", "item", "mon"].includes(a.kind), "Oferta inválida.");
@@ -1364,12 +1404,11 @@ function execute(r, p, k, d = {}) {
       }
       check(e.type === "wild", "Ação exclusiva de encontros selvagens.");
       if (k === "flee") {
-        p.enc = null;
-        p.notice = "Você escapou.";
+        closeEncounter(p, "Você escapou.");
         return;
       }
       check(
-        ["poke-ball", "great-ball", "ultra-ball"].includes(d.ball) &&
+        captureBalls.includes(d.ball) &&
           (p.items[d.ball] || 0) > 0,
         "Poké Bola indisponível.",
       );
@@ -1383,8 +1422,7 @@ function execute(r, p, k, d = {}) {
       if (caught) {
         deposit(p, e.wild);
         if (e.wild.shiny) p.shinyCaught = (p.shinyCaught || 0) + 1;
-        p.enc = null;
-        p.notice = e.wild.name + " capturado!";
+        closeEncounter(p, e.wild.name + " capturado!");
       } else {
         p.notice = "O Pokémon escapou da bola.";
         if (e.battle) {

@@ -4092,6 +4092,26 @@ body:has(#duelTeamScreen:not([hidden])) .system { visibility:hidden; }
 .exchange h2 { color: #ffe3a7; font-size: clamp(1.45rem, 3vw, 2.05rem); }
 .exchange h3 { font-size: 1rem; color: #ffe3a7; }
 .exchange h4 { font-size: .85rem; color: #dbeee6; }
+.exchange button {
+  background: #244642;
+  color: #fff1d5;
+  border-color: #728d83;
+}
+.exchange button:not(:disabled):hover { background: #365d55; }
+.exchange button.primary {
+  background: #f1d49b;
+  color: #24271e;
+}
+.exchange button.primary:not(:disabled):hover { background: #ffe2a8; }
+.exchange button:disabled {
+  background: #344a46;
+  color: #cedad4;
+  opacity: 1;
+}
+.exchange :is(button, input, select):focus-visible {
+  outline: 2px solid #ffe3a7;
+  outline-offset: 2px;
+}
 .exchange-layout {
   display: grid;
   grid-template-columns: minmax(128px, .8fr) minmax(300px, 2.2fr) minmax(230px, 1.45fr);
@@ -4141,7 +4161,11 @@ body:has(#duelTeamScreen:not([hidden])) .system { visibility:hidden; }
   border-radius: 8px;
 }
 .exchange-add { display: grid; grid-template-columns: minmax(0,1fr) 55px; gap: 5px; }
-.exchange-add label { min-width: 0; font-size: .76rem; }
+.exchange-add label { min-width: 0; font-size: .76rem; color: #dbeee6; }
+.exchange-add :is(select,input), .exchange-add option {
+  color: #183430;
+  background: #fffdf3;
+}
 .exchange-add :is(select,input) { min-width: 0; width: 100%; }
 .exchange-add button { grid-column: 1 / -1; }
 .exchange-assets { display: grid; gap: 4px; padding: 0; margin: 6px 0; list-style: none; }
@@ -4204,3 +4228,16 @@ body:has(#duelTeamScreen:not([hidden])) .system { visibility:hidden; }
 .lab-jobs .job-board { max-height:none; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); }
 .lab-jobs { margin-top:12px; }
 .lab-jobs summary { cursor:pointer; }
+.action-balance {
+  display: inline-block;
+  width: fit-content;
+  padding: 5px 9px;
+  border: 1px solid #bd9e60;
+  border-radius: 999px;
+  background: #172e32;
+  color: #ffe5ad;
+  font: 700 .8rem/1.25 system-ui, sans-serif;
+  white-space: nowrap;
+}
+.post-heading > .action-balance, .lab-heading > .action-balance { color: #ffe5ad; }
+.shop-heading { flex-wrap: wrap; }

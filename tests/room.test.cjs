@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { newRoom, player, command, view } = require("../game.cjs");
+const { beginRound, newRoom, player, command, view } = require("../game.cjs");
 const { avatars, maxPlayers } = require("../public/world.js");
 const rules = require("../rules.cjs");
 function lobby(size) {
@@ -89,6 +89,7 @@ test("trade transfers once, cancels a stale offer and awards correct end scores"
   for (let i = 0; i < 2; i++)
     for (const p of r.players) command(r, p, "finish");
   assert.equal(r.round, 2);
+  readRoundCards(r);
   assert.equal(r.phase, "actions");
   for (const p of r.players) command(r, p, "finish");
   assert.equal(r.phase, "final");
@@ -252,7 +253,6 @@ test("field jobs require Pokémon of the right types and a specific workplace", 
 });
 
 test("round cards are public, ordered by owner and resolved once", () => {
-  const { beginRound } = require("../game.cjs");
   const r = lobby(2), [a,b] = r.players;
   command(r, a, "start", options);
   assert.equal(r.cards.length, 2);
@@ -269,7 +269,8 @@ test("round cards are public, ordered by owner and resolved once", () => {
   a.party.push(rules.makeMon("abra"));
   b.party.push(rules.makeMon("onix"));
   const happiness = a.party[0].happiness;
-  beginRound(r, () => 0);
+  const rolls = [0, 0, 0, 99, 0, 0, 99];
+  beginRound(r, () => rolls.shift());
   assert.deepEqual(r.cards.map(c => c.type), ["fatigue", "lazy", "lazy"]);
   const first = r.cards[0].id;
   assert.deepEqual(view(r,a).cards, view(r,b).cards);
@@ -288,6 +289,126 @@ test("round cards are public, ordered by owner and resolved once", () => {
   beginRound(r, () => 80);
   assert.equal(r.phase,"actions");
   assert.equal(a.actions,10);
+});
+
+function readRoundCards(room) {
+  for (const card of room.cards) {
+    const owner = room.players.find(p => p.id === card.owner);
+    command(room, owner, "card", { id: card.id });
+  }
+}
+
+test("new round cards use their own roll thresholds and respect eligibility", () => {
+  const r = lobby(2), [a, b] = r.players;
+  r.round = 2;
+  b.party.push(rules.makeMon("abra"), rules.makeMon("onix"));
+  b.battled = true;
+  let rolls = [50, 20, 40, 20];
+  beginRound(r, () => rolls.shift());
+  assert.equal(rolls.length, 0);
+  assert.equal(r.phase, "actions");
+
+  b.battled = true;
+  rolls = [49, 19, 39, 19];
+  beginRound(r, () => rolls.shift());
+  assert.deepEqual(r.cards.map(c => c.type), ["restart-kit", "dusk-expedition", "quiet-camp", "dusk-expedition"]);
+  assert.equal(r.phase, "cards");
+  assert.equal(a.items["poke-ball"] || 0, 0);
+  assert.equal(b.quietCamp, undefined);
+  readRoundCards(r);
+  assert.equal(a.items["poke-ball"], 1);
+  assert.equal(a.restartKitUsed, true);
+
+  a.items["poke-ball"] = 0;
+  b.battled = true;
+  beginRound(r, () => 0);
+  assert.ok(!r.cards.some(c => c.type === "restart-kit"));
+  delete a.restartKitUsed;
+  for (const block of [{ money: 100 }, { items: { "great-ball": 1 } }, { box: [rules.makeMon("abra")] }]) {
+    Object.assign(a, { money: 0, items: {}, box: [] }, block);
+    beginRound(r, () => 0);
+    assert.ok(!r.cards.some(c => c.type === "restart-kit"));
+  }
+});
+
+test("quiet camp tracks distinct party members and survives a saved room round trip", () => {
+  const { serialize, deserialize } = require("node:v8");
+  let r = lobby(2);
+  let [a, b] = r.players;
+  r.round = r.rounds = 2;
+  const first = rules.makeMon("abra"), second = rules.makeMon("onix"), boxed = rules.makeMon("eevee");
+  first.happiness = second.happiness = boxed.happiness = 100;
+  a.party.push(first, second);
+  a.box.push(boxed);
+  a.battled = true;
+  beginRound(r, () => 0);
+  readRoundCards(r);
+  for (const uid of [boxed.uid, first.uid, first.uid]) command(r, a, "pet", { uid });
+  assert.deepEqual(view(r, a).you.quietCamp, { first: first.uid, complete: false });
+  r = deserialize(serialize(r));
+  [a, b] = r.players;
+  command(r, a, "pet", { uid: second.uid });
+  assert.equal(a.party[1].happiness, 135);
+  assert.equal(a.actions, 6);
+  assert.equal(a.petsGiven, 4);
+  command(r, a, "pet", { uid: second.uid });
+  assert.equal(a.party[1].happiness, 160);
+  command(r, a, "finish");
+  command(r, b, "finish");
+  assert.equal(r.phase, "final");
+  assert.equal(a.quietCamp, undefined);
+  assert.equal(a.duskExpedition, undefined);
+});
+
+test("dusk expedition rewards only a completed dusk exploration and pays once", (t) => {
+  const r = lobby(2), [a] = r.players;
+  r.round = 2;
+  a.money = 100;
+  beginRound(r, () => 0);
+  readRoundCards(r);
+  a.loc = "biome1";
+  for (const actions of [6, 3]) {
+    a.actions = actions;
+    command(r, a, "explore");
+    command(r, a, "flee");
+    assert.equal(a.duskExpedition.complete, false);
+  }
+  a.actions = 4;
+  a.items["poke-ball"] = 1;
+  const capture = t.mock.method(rules, "capture", () => false);
+  command(r, a, "explore");
+  command(r, a, "catch", { ball: "poke-ball" });
+  assert.ok(a.enc);
+  assert.equal(a.items["poke-ball"], 0);
+  command(r, a, "flee");
+  assert.equal(a.items["poke-ball"], 1);
+
+  a.actions = 5;
+  capture.mock.mockImplementation(() => true);
+  command(r, a, "explore");
+  command(r, a, "catch", { ball: "poke-ball" });
+  assert.equal(a.items["poke-ball"], 0);
+  assert.equal(a.duskExpedition.complete, true);
+  assert.throws(() => command(r, a, "flee"));
+
+  a.duskExpedition = { complete: false };
+  a.actions = 5;
+  a.items["poke-ball"] = 1;
+  command(r, a, "explore");
+  assert.deepEqual(command(r, a, "catch", { ball: "poke-ball" }), { caught: true });
+  assert.equal(a.items["poke-ball"], 1);
+  assert.equal(a.duskExpedition.complete, true);
+
+  for (const winner of ["p1", "p2"]) {
+    a.duskExpedition = { complete: false };
+    a.enc = {
+      type: "wild", period: "dusk", target: rules.makeMon("caterpie"),
+      battle: { choose() {}, view: () => ({ ended: true, winner }) },
+    };
+    const before = a.items["poke-ball"];
+    command(r, a, "fight", { cmd: "move 1" });
+    assert.equal(a.items["poke-ball"], before + 1);
+  }
 });
 
 test("Elite Four requires eight badges and takes place on the League island", () => {
@@ -347,11 +468,11 @@ test("a Pokémon can only escape after its trainer reads the unhappy card", () =
   for (const phase of ["resumo", "trocas", "duelos"]) finishPhase(phase);
   assert.equal(r.round, 2);
   assert.equal(r.phase, "cards");
-  assert.deepEqual(r.cards.map(c => [c.type, c.target]), [
+  assert.deepEqual(r.cards.filter(c => c.type === "unhappy").map(c => [c.type, c.target]), [
     ["unhappy", recovering.uid],
     ["unhappy", escaping.uid],
   ]);
-  for (const card of r.cards) command(r, a, "card", { id: card.id });
+  readRoundCards(r);
 
   for (let i = 0; i < 3; i++) command(r, a, "pet", { uid: recovering.uid });
   assert.deepEqual(view(r, a).players.map(p => [p.petsGiven, p.points.carentesco]), [
@@ -368,10 +489,10 @@ test("a Pokémon can only escape after its trainer reads the unhappy card", () =
   for (const phase of ["resumo", "trocas", "duelos"]) finishPhase(phase);
   assert.equal(r.round, 3);
   assert.equal(r.phase, "cards");
-  assert.deepEqual(r.cards.map(c => [c.type, c.target]), [
+  assert.deepEqual(r.cards.filter(c => c.type === "cruel-trainer" || c.type === "unhappy").map(c => [c.type, c.target]), [
     ["cruel-trainer", escaping.uid],
   ]);
-  command(r, a, "card", { id: r.cards[0].id });
+  readRoundCards(r);
   assert.equal(r.phase, "actions");
 });
 
@@ -474,6 +595,49 @@ test("move lessons can be declined or replace a move before the turn ends", () =
   assert.equal(pikachu.pp.growl, 7);
   assert.equal(view(r, p).you.moveLesson, null);
   assert.equal(p.done, true);
+});
+
+test("bag items are free and direct evolution items can be bought and consumed", () => {
+  const r = lobby(2), [p] = r.players;
+  command(r, p, "start", options);
+  readTutorials(r);
+  const applin = rules.makeMon("applin", 20);
+  const charcadet = rules.makeMon("charcadet", 20);
+  const duraludon = rules.makeMon("duraludon", 20);
+  p.party = [applin, charcadet, duraludon];
+  for (const rule of require("../data/rules.json").evolution) {
+    if (rule.trigger === "use-item" && rule.item)
+      assert.equal(view(r, p).shop[rule.item].category, "evolution");
+  }
+  const cases = [
+    ["tart-apple", applin, "Flapple"],
+    ["auspicious-armor", charcadet, "Armarouge"],
+    ["metal-alloy", duraludon, "Archaludon"],
+  ];
+  p.money = 3000;
+  command(r, p, "enterShop");
+  command(r, p, "shop", {lines: [...cases.map(([item]) => item), "potion", "oranberry"]
+    .map(item => ({item, qty:1, sell:false}))});
+  assert.equal(p.actions, 9);
+  assert.throws(() => command(r, p, "item", {item:"tart-apple", uid:charcadet.uid}), /não evolui/);
+  assert.equal(p.items["tart-apple"], 1);
+  for (const [item, mon, name] of cases) {
+    command(r, p, "item", {item, uid:mon.uid});
+    assert.equal(mon.name, name);
+    assert.equal(p.items[item], 0);
+    assert.ok(p.dex.includes(mon.speciesId));
+    for (let lesson; (lesson = view(r, p).you.moveLesson); )
+      command(r, p, "resolveMove", {uid:lesson.uid, move:lesson.move, replace:null});
+  }
+  assert.throws(() => command(r, p, "item", {item:"potion", uid:applin.uid}), /ferido/);
+  assert.equal(p.items.potion, 1);
+  applin.hp = applin.maxhp - 25;
+  command(r, p, "item", {item:"potion", uid:applin.uid});
+  assert.equal(applin.hp, applin.maxhp - 5);
+  assert.equal(p.items.potion, 0);
+  command(r, p, "item", {item:"oranberry", uid:applin.uid});
+  assert.equal(applin.heldItem, "oranberry");
+  assert.equal(p.actions, 9);
 });
 
 test("stone and trade evolutions record the before and after sprites for the owner", () => {

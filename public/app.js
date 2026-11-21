@@ -78,6 +78,9 @@ const cardArt = {
   lazy: ["Pokémon preguiçoso", "campo-pixel.png", "moon"],
   unhappy: ["Pokémon infeliz", "campo-pixel.png", "moon"],
   "cruel-trainer": ["Treinador do mal", "neve-pixel.png", "footprints"],
+  "restart-kit": ["Kit de recomeço", "city-pixel.png", "compass"],
+  "quiet-camp": ["Acampamento tranquilo", "floresta-pixel.png", "moon"],
+  "dusk-expedition": ["Expedição ao entardecer", "lago-pixel.png", "compass"],
 };
 const readCards = new Set(JSON.parse(sessionStorage.getItem("auroraReadCards") || "[]"));
 let displayedCard = "", cardSince = 0, cardTimer;
@@ -105,6 +108,9 @@ function renderCard(s) {
       lazy: (card.name || "") + " passou a rodada sem batalhar com seu treinador. Perde 10 de felicidade e fica paralisado.",
       unhappy: card.name + " terminou a rodada passada insatisfeito. Se a felicidade ficar abaixo de 50, ele pode fugir. Acaricie seu Pokémon para aumentar a felicidade.",
       "cruel-trainer": card.name + " fugiu por estar muito infeliz e saiu da sua coleção de Pokémon.",
+      "restart-kit": "Você recebeu 1 Poké Bola para tentar uma nova captura. Este kit só pode ser recebido uma vez por partida.",
+      "quiet-camp": "Faça carinho em dois Pokémon diferentes da sua equipe nesta rodada. O segundo ganha 10 de felicidade extra.",
+      "dusk-expedition": "Comece uma exploração com 4 ou 5 ações restantes e conclua o encontro nesta rodada para ganhar 1 Poké Bola.",
     };
     dialog.innerHTML = '<div class="card-art" style="background-image:url(scenes/' + art +
       ')"><span class="card-round">Rodada ' + s.round + ' · Cartas ' + (s.cards.indexOf(card) + 1) + '/' + s.cardCount + '</span></div><div class="card-copy"><span class="card-seal">' +
@@ -431,14 +437,21 @@ function showMon(m, full = false) {
     "</div>"
   );
 }
+function actionsRemaining(p) {
+  const count = Math.max(0, p.actions);
+  return count + (count === 1 ? " ação restante" : " ações restantes");
+}
+function actionBalance(p) {
+  return '<span class="action-balance">' + actionsRemaining(p) + '</span>';
+}
 function itemUseForm(p, id) {
-  if (state.phase !== "actions" || p.done || p.enc || (!p.actions && p.eliteRun == null)) return "";
+  if (state.phase !== "actions" || p.done || p.enc) return "";
   const targets = [...p.party, ...p.box];
   const usable = Object.entries(p.items).filter(([item, qty]) =>
     qty > 0 && state.shop[item] && !item.endsWith("-ball"));
   if (!targets.length || !usable.length) return "";
   return '<details class="task" id="' + id + '"><summary>' +
-    (p.eliteRun == null ? "Usar item · 1 ação" : "Usar item no intervalo") + '</summary>' +
+    (p.eliteRun == null ? "Usar item" : "Usar item no intervalo") + '</summary>' +
     '<label>Item' + select(id + "Item", usable.map(([item, qty]) =>
       opt(item, state.shop[item].name + " ×" + qty)).join("")) + '</label>' +
     '<label>Pokémon' + select(id + "Mon", targets.map((m) => opt(m.uid, m.name)).join("")) +
@@ -462,7 +475,7 @@ function inventory() {
                 ? btn("Liderar equipe", "lead", { uid: m.uid })
                 : "") +
               (p.actions
-                ? btn("Acariciar · 1 ação", "pet", { uid: m.uid })
+                ? btn("Acariciar · 1 ação · " + actionsRemaining(p), "pet", { uid: m.uid })
                 : "") +
               "</div>"
             : ""),
@@ -545,7 +558,7 @@ function actions() {
   let html = "";
   if (p.loc === leagueIsland) {
     const { reason } = gymDetails(p);
-    return panel(location.name, reason ? esc(reason) : btn("Desafiar Elite Four", "gym"));
+    return panel(location.name, actionBalance(p) + (reason ? esc(reason) : btn("Desafiar Elite Four", "gym")));
   }
   if (p.actions) {
     if (location.kind === "biome")
@@ -565,7 +578,7 @@ function actions() {
     }
     html += itemUseForm(p, "use");
   }
-  return panel(location.name, html);
+  return panel(location.name, actionBalance(p) + html);
 }
 function roster(q) {
   return (
@@ -2187,7 +2200,14 @@ function renderWorld() {
     p.actions +
     ' ações · <span class="world-period"><i aria-hidden="true">' + periodIcon + "</i> " + periodLabel + "</span> · " +
     p.badges.length +
-    " insígnias</span></div>";
+    " insígnias</span>" +
+    (s.phase === "actions" && p.quietCamp
+      ? "<span>Acampamento tranquilo · " +
+        (p.quietCamp.complete ? "Concluído" : (p.quietCamp.first ? "1/2" : "0/2")) + "</span>" : "") +
+    (s.phase === "actions" && p.duskExpedition
+      ? "<span>Expedição ao entardecer · " +
+        (p.duskExpedition.complete ? "Concluída" : "Explore com 4 ou 5 ações") + "</span>" : "") +
+    "</div>";
   if (!mapMounted) {
     WorldMap.mount($("map"), (id) => {
       if (id === leagueIsland) {
@@ -2573,14 +2593,15 @@ function fullFacility(title, body, footer = "", theme = activeFacility, portrait
 }
 
 const shopFilters = [
-  ["all", "Todos"], ["heal", "Poções"], ["balls", "Bolas"], ["stones", "Pedras"],
+  ["all", "Todos"], ["heal", "Poções"], ["balls", "Bolas"], ["stones", "Pedras"], ["evolution", "Evolução"],
   ["berry", "Bagas"], ["combat", "Combate"], ["held", "Equipáveis"],
 ];
 
 function shopScreen() {
   const work = workOption(state.you, "store");
   return '<section class="shop-screen" data-theme="store" aria-labelledby="shopTitle">' +
-    '<div class="shop-heading">' + uiIcon("backpack") + '<h2 id="shopTitle">Loja de Itens</h2></div>' +
+    '<div class="shop-heading">' + uiIcon("backpack") + '<h2 id="shopTitle">Loja de Itens</h2>' +
+    actionBalance(state.you) + '</div>' +
     '<div class="shop-layout"><aside class="shop-reception">' +
     '<img src="npc/loja.png" alt="Atendente da loja"><div class="shop-speech"><strong>Olá!</strong><p>Escolha os itens que quer comprar ou vender.</p></div>' +
     '</aside><div class="shop-catalog-panel"><div class="shop-filter-chips" aria-label="Categorias">' +
@@ -2613,6 +2634,7 @@ function updateCatalog(resetScroll = false) {
     if (shopFilter === "heal") return id === "potion";
     if (shopFilter === "balls") return id.endsWith("-ball");
     if (shopFilter === "stones") return id.endsWith("-stone") || item.category === "megaStone";
+    if (shopFilter === "evolution") return item.category === "evolution" && !id.endsWith("-stone");
     if (shopFilter === "held") return item.held && !item.category && !id.endsWith("-stone");
     return item.category === shopFilter;
   });
@@ -2724,7 +2746,8 @@ function pokemonCenter(p) {
     '<div class="center-team-heading"><h3>Sua equipe</h3><span>' + p.party.length +
     '/6 Pokémon</span></div><ul class="center-team">' + team + '</ul>' +
     '<div class="center-treatment"><strong class="center-balance">Saldo · ₽ ' +
-    p.money.toLocaleString("pt-BR") + '</strong><button type="button" class="center-heal" data-action="heal"' +
+    p.money.toLocaleString("pt-BR") + '</strong>' + actionBalance(p) +
+    '<button type="button" class="center-heal" data-action="heal"' +
     (canHeal && canAfford && !p.done && p.actions > 0 ? '' : ' disabled') +
     '><span aria-hidden="true">+</span><strong>Curar equipe</strong><small>₽ ' + state.healCost +
     ' · 1 ação</small></button>' +
@@ -2750,7 +2773,7 @@ function elitePanel(p, gym, reason, team) {
     btn(interval ? "Próxima batalha" : "Iniciar sequência · 1 ação", "gym", {}, "primary");
   return '<section class="elite-screen" aria-labelledby="eliteTitle"><div class="elite-frame">' +
     '<div class="elite-header"><div class="elite-heading"><span class="elite-crest" aria-hidden="true"><i></i></span>' +
-    '<div><small>Ilha da Liga</small><h2 id="eliteTitle">Elite Four</h2></div></div>' +
+    '<div><small>Ilha da Liga</small><h2 id="eliteTitle">Elite Four</h2></div></div>' + actionBalance(p) +
     '</div>' +
     '<ol class="elite-steps" aria-label="Etapas da Elite Four">' + steps + '</ol>' +
     (complete ? '<p class="elite-complete">Você venceu os quatro adversários.</p>' :
@@ -2830,7 +2853,7 @@ function laboratoryScreen(p) {
   const notice = p.money < lab.cost ? "Saldo insuficiente para modificar." :
     !p.actions || p.done ? "Sem ações disponíveis." : "";
   return '<section class="lab-screen" aria-labelledby="labTitle"><div class="lab-heading">' +
-    '<h2 id="labTitle">Laboratório</h2><span>' + esc(locName(p.loc)) + '</span></div>' +
+    '<h2 id="labTitle">Laboratório</h2><span>' + esc(locName(p.loc)) + '</span>' + actionBalance(p) + '</div>' +
     '<div class="lab-layout"><aside><img src="npc/laboratorio.png" alt="Cientista do laboratório">' +
     '<p>Cada modificação reduz a felicidade do Pokémon em ' + lab.happinessLoss +
     ' pontos, até o mínimo de zero.</p></aside><div class="lab-editor">' +
@@ -2859,7 +2882,7 @@ function facilityScreen() {
   return fullFacility("Ginásio · " + gym.name, '<div class="gym-opponent"><small>Ginásio</small>' +
     '<h2>' + esc(gym.name) + '</h2></div>' +
     '<div class="facility-list gym-team" aria-label="Equipe adversária">' + team + '</div>',
-    reason ? '<p>' + esc(reason) + '</p>' : btn("Desafiar", "gym", {}, "primary"),
+    actionBalance(p) + (reason ? '<p>' + esc(reason) + '</p>' : btn("Desafiar · 1 ação", "gym", {}, "primary")),
     "gym", gym.portrait ? "npc/lideres/" + encodeURIComponent(gym.portrait) + ".png" : "");
 }
 
@@ -2902,7 +2925,7 @@ window.addEventListener("resize", updatePostScroll);
 function jobPost(p) {
   return '<section class="post-screen" data-theme="post" aria-labelledby="postTitle">' +
     '<div class="post-heading">' + uiIcon("backpack") +
-    '<h2 id="postTitle">Quadro de empregos</h2><span>' + esc(locName(p.loc)) + '</span></div>' +
+    '<h2 id="postTitle">Quadro de empregos</h2><span>' + esc(locName(p.loc)) + '</span>' + actionBalance(p) + '</div>' +
     '<div class="post-layout"><aside class="post-reception">' +
     '<img src="npc/posto.png" alt="Atendente do Posto de Trabalho"></aside>' +
     '<div class="post-vacancies"><div class="post-nav">' +
@@ -2962,7 +2985,8 @@ function leagueEntryReason() {
 function leagueScene() {
   const reason = leagueEntryReason();
   const onIsland = state.you.loc === leagueIsland;
-  return '<section class="destination league"><h2>Ilha da Liga · Elite Four</h2>' +
+  return '<section class="destination league"><h2>Ilha da Liga · Elite Four</h2><small>' +
+    actionsRemaining(state.you) + '</small>' +
     '<button type="button" class="building league-entrance" data-enter-league="true"' +
     (reason ? ' disabled aria-describedby="league-entry-reason"' : '') + '><b>' +
     (onIsland ? 'Entrar na Elite Four' : 'Confirmar entrada · 1 ação') + '</b></button>' +
@@ -3010,7 +3034,7 @@ function locationScene() {
   const labScene = labVillageScenes[location.id];
   if (labScene) return '<section class="destination lab-village" data-village="' + location.id +
     '" style="background-image:url(scenes/' + labScene + ')"><h2>' + esc(location.name) +
-    '</h2><small>' + p.actions + ' ações</small><div class="lab-village-buildings">' +
+    '</h2><small>' + actionsRemaining(p) + '</small><div class="lab-village-buildings">' +
     building("center") + building("lab") + building("store") + '</div></section>';
   const gym = location.kind === "city" ? building("gym") : "";
   const facility = activeFacility;
@@ -3019,7 +3043,7 @@ function locationScene() {
   const art = town ? townArt : biomeArt;
   return '<section class="destination ' + (town ? "town " + location.kind : "wild") +
     '" style="background-image:url(scenes/' + art + ')"><h2>' + esc(location.name) +
-    "</h2><small>" + p.actions + " ações</small>" +
+    "</h2><small>" + actionsRemaining(p) + "</small>" +
     (town ? building("center") + building("store") + gym +
       (location.kind === "city" ? building("post") : "") : biomeActions(p)) +
     (town && facility ? '<section class="job-panel facility-panel" aria-labelledby="facility-title">' +
