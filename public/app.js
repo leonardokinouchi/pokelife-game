@@ -135,7 +135,7 @@ function sendRealtime(payload) {
   const link = realtime;
   const id = ++realtimeId;
   return new Promise(resolve => {
-    const timer = setTimeout(() => closeRealtime(link), 1250);
+    const timer = setTimeout(() => closeRealtime(link), 4000);
     link.pending.set(id, {resolve, timer, sentAt:Date.now()});
     try { link.channel.send(JSON.stringify({...payload, id})); }
     catch { closeRealtime(link); }

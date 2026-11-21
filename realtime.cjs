@@ -59,7 +59,10 @@ function createRealtime(loadRoom, dispatch) {
           const {id, action, direction, pose, lane} = packet;
           if (!Number.isSafeInteger(id) || (action !== "state" && action !== allowed[kind])) return;
           const now = Date.now();
-          if (action === "state" && now - lastState < 45) return;
+          if (action === "state" && now - lastState < 45) {
+            channel.send(JSON.stringify({id}));
+            return;
+          }
           if (action === "state") lastState = now;
           const task = queue.then(() => channel.readyState === "open" &&
             dispatch({code, token, action, direction, pose, lane}, {round, kind}));
