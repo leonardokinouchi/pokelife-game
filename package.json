@@ -1,0 +1,16 @@
+{
+  "name": "expedicao-aurora",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node --watch-path=server.cjs --watch-path=game.cjs --watch-path=battle.cjs --watch-path=rules.cjs --watch-path=million.cjs --watch-path=pair-minigames.cjs --watch-path=public --watch-path=data server.cjs",
+    "test": "node --test test-rules.cjs tests/*.test.cjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@pkmn/sim": "^0.11.0",
+    "phaser": "^3.90.0"
+  }
+}

@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Guia do treinador · Expedição Aurora</title>
+  <link rel="stylesheet" href="/guide.css">
+  <script src="/guide.js" defer></script>
+</head>
+<body>
+  <header class="hero"><div class="wrap">
+    <a href="/">← Voltar ao lobby</a>
+    <p class="eyebrow">Expedição Aurora</p>
+    <h1>Guia do treinador</h1>
+    <p>Planeje a próxima ação, encontre Pokémon e compare suas chances de captura.</p>
+  </div></header>
+  <div class="wrap layout">
+    <nav aria-label="Seções do guia">
+      <a href="#inicio">Primeiros passos</a><a href="#encontros">Encontros</a>
+      <a href="#captura">Captura</a><a href="#rodadas">Rodadas e cartas</a>
+      <a href="#economia">Economia</a><a href="#equipe">Equipe e batalha</a>
+      <a href="#liga">Liga e duelos</a><a href="#minigames">Minigames</a>
+      <a href="#pontos">Pontuação</a>
+    </nav>
+    <main>
+      <section id="inicio"><h2>Primeiros passos</h2>
+        <p>Entre em uma sala de 2 a 12 treinadores, em número par. Escolha um avatar disponível e marque <b>Estou pronto</b>.</p>
+        <ol><li>Em Porto Aurora, assuma a vaga de vendedor ou auxiliar de enfermagem.</li>
+        <li>Trabalhe no local da vaga para ganhar ₽ 100. Compre uma Poké Bola e confirme o carrinho.</li>
+        <li>Viaje por uma rota conectada e explore um bioma. Antes de ter um Pokémon apto, você pode tentar capturar ou fugir sem lutar.</li></ol>
+      </section>
+      <section id="encontros"><h2>Encontros por bioma</h2>
+        <p>O horário é individual e depende das ações <b>antes</b> de explorar. O encontro mantém o período em que começou.</p>
+        <div class="periods"><span>☀ Dia <b>10–6</b></span><span>◒ Tarde <b>5–4</b></span><span>☾ Noite <b>3–0</b></span></div>
+        <p>Quando há candidatos temáticos elegíveis, o jogo sorteia pelo grupo temático em 60% dos casos e pelo comum em 40%. Um Pokémon presente nos dois grupos soma as duas chances. A tabela considera toda a variação de nível de uma exploração. A chance de shiny é 5% por encontro.</p>
+        <form id="encounterForm" class="filters">
+          <label>Bioma<select name="biome">
+            <option value="campo">Prado Solar</option><option value="floresta">Bosque dos Cedros</option>
+            <option value="caverna">Gruta do Eco</option><option value="praia">Praia das Marés</option>
+            <option value="lago">Lago de Jade</option><option value="neve">Serra da Geada</option>
+            <option value="vulcao">Vulcão Rubro</option><option value="cidade">Distrito Antigo</option>
+          </select></label>
+          <label>Período<select name="period"><option value="day">Dia</option><option value="dusk">Tarde</option><option value="night">Noite</option></select></label>
+          <label>Nível do primeiro Pokémon<input name="level" type="number" value="3" min="1" max="100" required></label>
+          <button>Consultar</button>
+        </form>
+        <label>Buscar na lista<input id="encounterSearch" type="search" placeholder="Nome do Pokémon"></label>
+        <p id="encounterStatus" role="status"></p>
+        <div class="table-scroll" tabindex="0" aria-label="Resultados de encontros"><table><thead><tr><th>Pokémon</th><th>Comum</th><th>Temático</th><th>Total</th></tr></thead><tbody id="encountersBody"></tbody></table></div>
+        <details><summary>Critérios de nível e raridade</summary>
+          <p>Sem equipe, o nível de referência é 3. Abaixo do nível 8, o filtro exige taxa de captura de pelo menos 120. Antes do nível 18, exclui evoluções. Antes do nível 50, exclui lendários e míticos. O grupo temático exclui ambos em todos os níveis. Se o filtro deixar o grupo comum vazio, o jogo usa o grupo comum completo daquele bioma.</p>
+        </details>
+      </section>
+      <section id="captura"><h2>Calculadora de captura</h2>
+        <p>As porcentagens são por bola lançada. Menos PV e condições de status aumentam a chance. Sono e congelamento têm o maior bônus.</p>
+        <form id="captureForm" class="filters">
+          <label>Pokémon<select name="id" required><option value="">Carregando catálogo…</option></select></label>
+          <label>PV atuais<input name="hp" type="number" value="20" min="1" required></label>
+          <label>PV máximos<input name="maxhp" type="number" value="20" min="1" required></label>
+          <label>Condição<select name="status"><option value="">Nenhuma</option><option value="slp">Sono</option><option value="frz">Congelamento</option><option value="par">Paralisia</option><option value="brn">Queimadura</option><option value="psn">Envenenamento</option><option value="tox">Veneno grave</option></select></label>
+          <button>Calcular</button>
+        </form>
+        <p id="captureStatus" role="status"></p><dl id="captureResults" class="periods"></dl>
+        <details><summary>Como o jogo calcula</summary><p>A taxa da espécie é multiplicada pelo fator de PV <code>(3 × PV máximos − 2 × PV atuais) / (3 × PV máximos)</code>, pelo bônus da bola (1, 1,5 ou 2) e pelo bônus de status (1, 1,5 ou 2,5). O valor resultante é dividido por 255 e elevado a 0,75, com teto de 100%. A Master Ball garante a captura.</p></details>
+      </section>
+      <section id="rodadas"><h2>Rodadas e cartas</h2>
+        <p>Cada treinador começa com 10 ações. A rodada abre com cartas. Todos veem cada carta e o destinatário confirma. Depois da expedição vêm resumo, trocas, minigame opcional e duelos. A última expedição vai direto à classificação.</p>
+        <ul><li><b>Tutorial:</b> aparece para cada treinador na primeira rodada.</li><li><b>Cansaço:</b> andar seis ou mais vezes dá 80% de chance de perder duas ações na próxima rodada.</li><li><b>Pokémon preguiçoso:</b> sem batalha na rodada, há 20% de chance de um Pokémon da equipe perder 10 de felicidade e ficar paralisado.</li><li><b>Pokémon infeliz:</b> aviso abaixo de 100 de felicidade. Depois do aviso, abaixo de 50 pode fugir. A chance é 100 menos a felicidade, em porcentagem. A fuga gera a carta <b>Treinador do mal</b>.</li></ul>
+      </section>
+      <section id="economia"><h2>Economia e ações</h2>
+        <p>Viajar, explorar, assumir uma vaga, trabalhar, fazer carinho, usar item, curar e desafiar um ginásio custam uma ação. Entrar na loja e organizar a equipe são livres. A confirmação do carrinho custa uma ação, com compras e vendas juntas. A revenda paga 50%, arredondado para baixo.</p>
+        <p>Há 11 carreiras com três graus. Vendedor e auxiliar de enfermagem começam com ₽ 100 e não exigem Pokémon. Nas demais vagas, um Pokémon da equipe com PV acima de zero precisa ter um dos dois tipos do cargo. Promoções sobem o nível mínimo e, no centro, também exigem felicidade.</p>
+        <p>O segundo grau exige 500 XP no cargo inicial da loja ou do centro e 600 XP nas demais carreiras. O terceiro grau exige 400 XP no cargo intermediário. Até dois turnos por cargo e rodada rendem 100 XP cada. Vagas de segundo grau que pagam ₽ 200 ou mais permitem dois turnos pagos. Vagas de terceiro grau permitem um turno pago por rodada.</p>
+        <p>Consulte salários e requisitos no Posto de trabalho. As vagas de laboratório são assumidas no próprio laboratório. Trocar de cargo preserva o XP. Vagas de lojas, centros e laboratórios ficam vinculadas ao estabelecimento da contratação. As trocas entre treinadores dependem da aceitação e da disponibilidade dos bens.</p>
+      </section>
+      <section id="equipe"><h2>Equipe, evolução e batalha</h2>
+        <p>A equipe ativa comporta seis Pokémon. Os demais vão para a Box. O Centro Pokémon restaura PV e PP e remove condições de status por ₽ 100. Carinho dá 25 de felicidade. Ao fim da fase de ações, cada Pokémon perde 2, inclusive na Box.</p>
+        <p>Vitórias com XP dividem a recompensa entre os Pokémon da equipe abaixo do nível 100, incluindo desmaiados. Há até quatro golpes por Pokémon. Você pode esquecer um golpe ou recusar o novo. Evoluções podem depender de nível, felicidade, horário, itens, trocas, gênero e golpes. Tarde conta como dia para evoluções por horário.</p>
+        <p>A batalha usa tipos, habilidades, natureza, IVs, EVs e itens equipados. Alterações temporárias aparecem na arena. Uma Mega Pedra compatível habilita Mega Evolução quando disponível. Bagas podem ser consumidas durante a batalha.</p>
+        <p>Os laboratórios das vilas das Flores, da Geada e das Cinzas modificam IVs (0–31), EVs (até 252 por atributo e 510 no total), natureza e habilidade. Uma modificação custa ₽ 1.500, uma ação e até 100 de felicidade.</p>
+      </section>
+      <section id="liga"><h2>Liga e duelos</h2>
+        <p>Conquiste oito insígnias para acessar a Ilha da Liga, por Costa Serena ou Monte Azul. A Elite Four tem quatro desafios consecutivos, com seis Pokémon por adversário. A sequência custa uma ação e permite usar itens da mochila nos intervalos.</p>
+        <p>A roleta sorteia um formato que as equipes da sala suportam. Solo usa um ou três Pokémon por treinador. Duplas 1v1 usam quatro por treinador. Duplas 2v2 usam dois por treinador, com quatro, oito ou doze jogadores na sala.</p>
+        <p>Escolha sua escalação e a ordem de entrada. O duelo começa após todos os participantes confirmarem. As equipes entram recuperadas em cópias temporárias. Cada vencedor recebe ₽ 800. Se apenas um treinador tiver equipe, ele vence por ausência.</p>
+      </section>
+      <section id="minigames"><h2>Minigames</h2>
+        <ul><li><b>Pedido do mercado:</b> calcule o total da compra. Acerto rende ₽ 180.</li><li><b>Leilão:</b> cubra o lance com seu saldo ou passe. O vencedor paga e leva o Pokémon.</li><li><b>Corrida de sobrevivência:</b> use ↑ para pular troncos e ↓ para se abaixar sob barreiras. O último sobrevivente vence.</li><li><b>Quiz do Milhão:</b> responda antes do prazo. A classificação considera acertos e tempo.</li></ul>
+        <a href="/test-minigames">Abrir página de treino</a>
+      </section>
+      <section id="pontos"><h2>Pontuação final</h2>
+        <ul><li>3 por espécie registrada</li><li>10 por shiny capturado</li><li>1 por ₽ 200 de saldo final</li><li>10 por insígnia e 40 pela Elite Four completa</li><li>1 por carinho</li><li>5 por vitória em duelo ou minigame</li></ul>
+        <p>Quem soma mais pontos vence. Um empate na maior pontuação compartilha a vitória.</p>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

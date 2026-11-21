@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Treino de minigames · Expedição Aurora</title>
+  <link rel="stylesheet" href="/minigame-test.css">
+  <script src="/minigame-test.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>Treino de minigames</h1>
+    <nav aria-label="Escolher minigame">
+      <button type="button" data-game="market">Pedido do mercado</button>
+      <button type="button" data-game="auction">Leilão</button>
+      <button type="button" data-game="darkAuction">Leilão no Escuro</button>
+      <button type="button" data-game="race">Corrida de sobrevivência</button>
+      <button type="button" data-game="million">Show do Milhão - 999.000</button>
+      <button type="button" data-game="pokemonQuiz">Quem é esse Pokémon?</button>
+      <button type="button" data-game="wires">Cortes do Xurkitree</button>
+      <button type="button" data-game="guess">Adivinha</button>
+    </nav>
+  </header>
+  <main>
+    <p id="practiceStatus" role="status">Escolha um minigame para treinar contra o Rival.</p>
+    <iframe id="practiceGame" title="Minigame em teste" hidden></iframe>
+  </main>
+</body>
+</html>

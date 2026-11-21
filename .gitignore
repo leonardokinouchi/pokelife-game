@@ -1,0 +1,10 @@
+node_modules/
+.env
+.env.*
+*.pem
+*.key
+*.sav
+*.sav.tmp
+npm-debug.log*
+dist/
+.vercel/

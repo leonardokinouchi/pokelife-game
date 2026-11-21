@@ -1,0 +1,31 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "regions": [
+    "gru1"
+  ],
+  "buildCommand": "npm test && node scripts/build-vercel.cjs",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/api",
+      "destination": "/api/game"
+    },
+    {
+      "source": "/api/guide/:guide",
+      "destination": "/api/game?guide=:guide"
+    },
+    {
+      "source": "/guia",
+      "destination": "/guide.html"
+    },
+    {
+      "source": "/test-minigames",
+      "destination": "/minigame-test.html"
+    },
+    {
+      "source": "/test-minigames/play",
+      "destination": "/index.html"
+    }
+  ]
+}

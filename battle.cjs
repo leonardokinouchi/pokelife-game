@@ -1,0 +1,434 @@
+const { Battle, Dex } = require("@pkmn/sim");
+
+const sides = ["p1", "p2", "p3", "p4"];
+const battleStatuses = new Set(["brn", "par", "slp", "frz", "psn", "tox"]);
+
+function toTeamSet(mon) {
+  const species = Dex.species.get(mon.species || mon.slug);
+  if (!species.exists)
+    throw new Error("Espécie indisponível no simulador: " + mon.name);
+  const moves = (mon.moves || [])
+    .map((id) => Dex.moves.get(id))
+    .filter((move) => move.exists);
+  return {
+    species: species.name,
+    name: mon.name || species.name,
+    level: mon.level,
+    moves: moves.length
+      ? moves.slice(0, 4).map((move) => move.name)
+      : ["Struggle"],
+    ability: mon.ability || species.abilities[0],
+    item: mon.heldItem || "",
+    nature: mon.nature || "Serious",
+    gender: mon.gender,
+    shiny: Boolean(mon.shiny),
+    happiness: mon.happiness,
+    ivs: mon.ivs,
+    evs: mon.evs,
+  };
+}
+
+const effectLabels = {
+  confusion: "Confusão", substitute: "Substituto", leechseed: "Semente drenante",
+  taunt: "Provocação", encore: "Bis", torment: "Tormento", disable: "Golpe bloqueado",
+  yawn: "Sonolência", attract: "Atração", perishsong: "Canção da perdição",
+  partiallytrapped: "Aprisionado", ingrain: "Raízes", aquaring: "Anel de água",
+  focusenergy: "Foco crítico", magnetrise: "Levitação magnética", curse: "Maldição",
+  healblock: "Cura bloqueada", embargo: "Itens bloqueados", nightmared: "Pesadelo",
+  telekinesis: "Telecinese", uproar: "Alvoroço", recharge: "Recarga",
+  roost: "Pouso", smackdown: "Derrubado", charge: "Carga elétrica", stockpile: "Estoque",
+  mustrecharge: "Recarga", flashfire: "Fogo intensificado", destinybond: "Vínculo do destino",
+  reflect: "Refletor", lightscreen: "Tela de luz", auroraveil: "Véu de aurora",
+  safeguard: "Proteção contra status", mist: "Névoa protetora", tailwind: "Vento a favor",
+  spikes: "Espinhos", toxicspikes: "Espinhos tóxicos", stealthrock: "Rochas furtivas",
+  stickyweb: "Teia pegajosa", quickguard: "Guarda rápida", wideguard: "Guarda ampla",
+  raindance: "Chuva", primordialsea: "Chuva intensa", sunnyday: "Sol forte",
+  desolateland: "Sol abrasador", sandstorm: "Tempestade de areia", snow: "Neve",
+  hail: "Granizo", deltastream: "Ventos fortes",
+  electricterrain: "Terreno elétrico", grassyterrain: "Terreno de grama",
+  psychicterrain: "Terreno psíquico", mistyterrain: "Terreno nebuloso",
+  trickroom: "Sala de inversão", magicroom: "Sala mágica", wonderroom: "Sala das maravilhas",
+  gravity: "Gravidade", watersport: "Esporte aquático", mudsport: "Esporte de lama",
+};
+const publicVolatiles = new Set([
+  "confusion", "substitute", "leechseed", "taunt", "encore", "torment", "disable",
+  "yawn", "attract", "perishsong", "partiallytrapped", "ingrain", "aquaring",
+  "focusenergy", "magnetrise", "curse", "healblock", "embargo", "telekinesis",
+  "uproar", "charge", "stockpile", "mustrecharge", "flashfire", "destinybond", "smackdown",
+]);
+const statLabels = {
+  atk: "Ataque", def: "Defesa", spa: "Ataque Especial", spd: "Defesa Especial",
+  spe: "Velocidade", accuracy: "Precisão", evasion: "Evasão",
+};
+
+const effectName = raw => {
+  const name = raw.replace(/^(?:move|ability|item): /i, "");
+  return effectLabels[name.toLowerCase().replace(/[^a-z0-9]/g, "")] || name;
+};
+
+function listEffects(states) {
+  return Object.entries(states).map(([id, state]) => ({
+    id, label: effectName(Dex.conditions.get(id).name || id),
+    layers: state.layers > 1 ? state.layers : undefined,
+  }));
+}
+
+function battleLog(line, viewer) {
+  const [, event, first = "", second = "", third = ""] = line.split("|");
+  const who = first.replace(/^p[12][a-z]?: /, "");
+  switch (event) {
+    case "move":
+      return who + " usou " + second + ".";
+    case "switch":
+    case "drag":
+      return who + " entrou em campo.";
+    case "faint":
+      return who + " desmaiou.";
+    case "-supereffective":
+      return "Foi supereficaz!";
+    case "-resisted":
+      return who + " resistiu ao golpe.";
+    case "-immune":
+      return who + " ficou imune.";
+    case "-crit":
+      return "Acerto crítico!";
+    case "-miss":
+      return who + " errou o alvo.";
+    case "-status":
+      return who + " recebeu a condição " + second.toUpperCase() + ".";
+    case "-start":
+      if (second === "confusion") return who + " ficou confuso!";
+      return who + " recebeu o efeito " + effectName(second) + ".";
+    case "-end":
+      if (second === "confusion") return who + " se livrou da confusão.";
+      return effectName(second) + " terminou para " + who + ".";
+    case "-activate":
+      if (second === "confusion") return who + " está confuso!";
+      return who + " ativou " + effectName(second) + ".";
+    case "-damage":
+      return third === "[from] confusion" ? who + " se machucou na confusão!" : null;
+    case "-boost":
+    case "-unboost":
+      return (statLabels[second] || second) + " de " + who +
+        (event === "-boost" ? " subiu " : " caiu ") + (third || "1") +
+        (third && third !== "1" ? " estágios." : " estágio.");
+    case "-setboost":
+      return (statLabels[second] || second) + " de " + who + " foi ajustado para " + third + ".";
+    case "-clearboost":
+      return "Os atributos de " + who + " voltaram ao normal.";
+    case "-clearallboost":
+      return "As alterações de atributos foram removidas do campo.";
+    case "-weather":
+      if (second === "[upkeep]") return null;
+      return first === "none" ? "O clima voltou ao normal." : "Clima: " + effectName(first) + ".";
+    case "-fieldstart":
+    case "-fieldend":
+      return effectName(first) + (event === "-fieldstart" ? " entrou em efeito." : " terminou.");
+    case "-sidestart":
+    case "-sideend":
+      return effectName(second) + (event === "-sidestart" ? " entrou em efeito " : " terminou ") +
+        (Number(first[1]) % 2 === Number(viewer[1]) % 2 ? "no seu lado." : "no lado adversário.");
+    case "-ability":
+      return who + " ativou " + effectName(second) + ".";
+    case "-item":
+      return who + " recebeu " + effectName(second) + ".";
+    case "-heal":
+      return who + " recuperou PV.";
+    case "-enditem":
+      return who + " perdeu ou consumiu " + effectName(second) + ".";
+    case "-curestatus":
+      return who + " se recuperou da condição de status.";
+    case "cant":
+      return who + " não conseguiu agir.";
+    case "-mega":
+      return who + " megaevoluiu!";
+    case "-fail":
+      return "A ação falhou.";
+    default:
+      return null;
+  }
+}
+
+class BattleSession {
+  constructor({ p1, p2, p3, p4, cpu = false, seed, mode = "solo" }) {
+    this.cpu = cpu;
+    this.engine = new Battle({
+      formatid: {solo:"gen9customgame", doubles:"gen9doublescustomgame", multi:"gen9multirandombattle"}[mode],
+      ...(seed && { seed }),
+    });
+    this.roster = new Map();
+    for (const [index, party] of (mode === "multi" ? [p1, p2, p3, p4] : [p1, p2]).entries()) {
+      const available = party.filter((mon) => mon.hp > 0).slice(0, 6);
+      if (!available.length)
+        throw new Error("Sua equipe precisa de um Pokémon com vida.");
+      const id = sides[index];
+      this.engine.setPlayer(id, { name: id, team: available.map(toTeamSet) });
+      this.engine.getSide(id).pokemon.forEach((pm, i) => {
+        const mon = available[i];
+        this.roster.set(pm, mon);
+        pm.hp = Math.max(
+          1,
+          Math.min(
+            pm.maxhp,
+            Math.round((mon.hp * pm.maxhp) / (mon.maxhp || pm.maxhp)),
+          ),
+        );
+        if (battleStatuses.has(mon.status)) {
+          pm.status = mon.status;
+          pm.statusState = this.engine.initEffectState({
+            id: mon.status,
+            target: pm,
+          });
+          if (mon.status === "slp")
+            pm.statusState.time = mon.sleepTurns ?? this.engine.random(2, 5);
+          if (mon.status === "tox") pm.statusState.stage = 0;
+        }
+        for (const slot of pm.baseMoveSlots) {
+          slot.maxpp = Dex.moves.get(slot.id).pp;
+          slot.pp = Math.max(
+            0,
+            Math.min(slot.maxpp, mon.pp?.[slot.id] ?? slot.maxpp),
+          );
+        }
+      });
+    }
+    if (this.engine.requestState === "teampreview") this.engine.makeChoices();
+    this.advanceCpu();
+    this.sync();
+  }
+
+  snapshot() {
+    return {
+      cpu: this.cpu,
+      engine: this.engine.toJSON(),
+      teams: this.engine.sides.map(side => side.pokemon.map(pm => this.roster.get(pm))),
+    };
+  }
+
+  static restore(saved) {
+    const session = Object.create(BattleSession.prototype);
+    session.cpu = saved.cpu;
+    session.engine = Battle.fromJSON(saved.engine);
+    session.roster = new Map();
+    session.engine.sides.forEach((side, i) => side.pokemon.forEach((pm, j) =>
+      session.roster.set(pm, saved.teams[i][j])));
+    return session;
+  }
+
+  sync() {
+    for (const [pm, mon] of this.roster) {
+      mon.hp =
+        pm.hp <= 0
+          ? 0
+          : Math.max(
+              1,
+              Math.min(mon.maxhp, Math.round((pm.hp * mon.maxhp) / pm.maxhp)),
+            );
+      mon.heldItem = pm.item;
+      mon.status = battleStatuses.has(pm.status) ? pm.status : "";
+      mon.sleepTurns = mon.status === "slp" ? pm.statusState.time : undefined;
+      mon.pp = Object.fromEntries(
+        pm.baseMoveSlots.map((slot) => [slot.id, slot.pp]),
+      );
+    }
+  }
+
+  choices(id) {
+    const side = this.engine.getSide(id);
+    const req = side.activeRequest;
+    if (this.engine.ended || !req || req.wait || side.isChoiceDone()) return [];
+    const result = [];
+    const active = req.active?.[0];
+    for (const [i, move] of (active?.moves || []).entries()) {
+      if (move.disabled || move.pp === 0) continue;
+      const command = "move " + (i + 1);
+      const { type, category, basePower, accuracy, priority } = Dex.moves.get(move.id);
+      const choice = {
+        kind: "move",
+        command,
+        label: move.move,
+        type,
+        category,
+        basePower,
+        accuracy,
+        priority,
+        pp: move.pp,
+        maxpp: move.maxpp,
+      };
+      result.push(choice);
+      if (active.canMegaEvo)
+        result.push({ ...choice, command: command + " mega", label: move.move + " · Mega" });
+    }
+    if (!active?.trapped) {
+      for (const [i, pm] of side.pokemon.entries()) {
+        if (
+          pm.isActive ||
+          (side.active[0]?.volatiles.revivalblessing ? !pm.fainted : pm.fainted)
+        )
+          continue;
+        result.push({
+          kind: "switch",
+          command: "switch " + (i + 1),
+          label: "Trocar para " + pm.name,
+        });
+      }
+    }
+    return result;
+  }
+
+  groupChoices(id) {
+    const side = this.engine.getSide(id);
+    const req = side.activeRequest;
+    if (this.engine.ended || !req || req.wait || side.isChoiceDone()) return [];
+    const reserve = side.pokemon.map((pm, index) => ({pm, index}))
+      .filter(({pm}) => !pm.isActive && !pm.fainted);
+    const switches = reserve.map(({pm, index}) => ({
+      command: "switch " + (index + 1), label: "Trocar para " + pm.name,
+    }));
+    return side.active.flatMap((pm, slot) => {
+      if (req.forceSwitch) {
+        if (!req.forceSwitch[slot]) return [{name:pm.name, options:[{command:"pass", label:"Sem troca"}]}];
+        const canPass = reserve.length < req.forceSwitch.filter(Boolean).length;
+        return [{name:pm.name, options:canPass ? [...switches, {command:"pass", label:"Deixar espaço vazio"}] : switches}];
+      }
+      if (pm.fainted || pm.volatiles.commanding)
+        return [{name:pm.name, options:[{command:"pass", label:"Sem ação"}]}];
+      const active = req.active?.[slot];
+      if (!active) return [];
+      const moves = active.moves.flatMap((move, i) => {
+        if (move.disabled || move.pp === 0) return [];
+        const base = "move " + (i + 1);
+        const targetType = move.target || Dex.moves.get(move.id).target;
+        const needsTarget = this.engine.actions.targetTypeChoices(targetType);
+        const valid = this.engine.sides.flatMap(s => s.active).filter(target =>
+          target && this.engine.validTarget(target, pm, targetType));
+        const available = valid.filter(target => !target.fainted);
+        const targets = needsTarget && valid.length ? (available.length ? available : valid) : [null];
+        return targets.flatMap(target => {
+          const command = base + (target ? " " + pm.getLocOf(target) : "");
+          const label = move.move + (target ? " → " + target.name +
+            (target.side.n % 2 === side.n % 2 ? " (aliado)" : " (rival)") : "");
+          const choice = {command, label};
+          return active.canMegaEvo ? [choice, {command:command + " mega", label:label + " · Mega"}] : [choice];
+        });
+      });
+      return [{name:pm.name, options:active.trapped ? moves : [...moves, ...switches]}];
+    });
+  }
+
+  choose(id, command) {
+    if (!this.engine.sides.some(side => side.id === id) || typeof command !== "string" ||
+        (this.cpu && id === "p2"))
+      throw new Error("Essa ação não está disponível nesta batalha.");
+    const commands = command.split(",").map(choice => choice.trim());
+    const groups = this.engine.gameType === "singles"
+      ? [{options:this.choices(id)}] : this.groupChoices(id);
+    if (commands.length !== groups.length ||
+        !groups.every((group, index) => group.options.some(option => option.command === commands[index])))
+      throw new Error("Essa ação não está disponível nesta batalha.");
+    if (!this.engine.choose(id, command))
+      throw new Error("O simulador recusou essa ação.");
+    this.advanceCpu();
+    this.sync();
+    return this.view(id);
+  }
+
+  // The trainer used the turn throwing a ball. Allow just the wild opponent to act.
+  cpuTurnAfterItem(id = "p1") {
+    if (!this.cpu || id !== "p1" || !this.canUseItem(id)) {
+      throw new Error("Aguarde sua vez de usar um item.");
+    }
+    this.engine.p1.choice.actions.push({ choice: "pass" });
+    if (this.engine.allChoicesDone()) this.engine.commitChoices();
+    this.advanceCpu();
+    this.sync();
+    return this.view(id);
+  }
+
+  canUseItem(id) {
+    return (
+      !this.engine.ended &&
+      this.engine.getSide(id).requestState === "move" &&
+      !this.engine.getSide(id).isChoiceDone()
+    );
+  }
+
+  advanceCpu() {
+    if (!this.cpu) return;
+    while (!this.engine.ended) {
+      const options = this.choices("p2");
+      if (!options.length) break;
+      const moves = options.filter((choice) => choice.kind === "move");
+      const optionsToTry = (moves.length ? moves : options).slice();
+      this.engine.prng.shuffle(optionsToTry);
+      if (
+        !optionsToTry.some((choice) => this.engine.choose("p2", choice.command))
+      ) {
+        throw new Error("O adversário ficou sem uma ação válida.");
+      }
+    }
+  }
+
+  view(id) {
+    const describe = (pm) => {
+      if (!pm) return null;
+      const mon = this.roster.get(pm);
+      return {
+        uid: mon.uid,
+        name: pm.name,
+        species: pm.species.name,
+        slug: mon.slug,
+        spriteId: pm.species.spriteid,
+        pokemonId: mon.pokemonId,
+        shiny: Boolean(mon.shiny),
+        level: pm.level,
+        hp: pm.hp,
+        maxHp: pm.maxhp,
+        maxhp: pm.maxhp,
+        status: pm.status,
+        boosts: Object.fromEntries(Object.entries(pm.boosts).filter(([, stage]) => stage)),
+        effects: listEffects(Object.fromEntries(Object.entries(pm.volatiles)
+          .filter(([key]) => publicVolatiles.has(key)))),
+        types: pm.getTypes(),
+      };
+    };
+    const ownSide = this.engine.getSide(id);
+    const foeSide = ownSide.foe;
+    const activePokemon = side => [side, side.allySide].filter(Boolean)
+      .flatMap(s => s.active.map(describe)).filter(Boolean);
+    const choices = this.engine.gameType === "singles" ? this.choices(id) : [];
+    const groups = this.engine.gameType === "singles" ? [] : this.groupChoices(id);
+    const log = [];
+    for (let i = 0; i < this.engine.log.length; i++) {
+      if (this.engine.log[i].startsWith("|split|")) {
+        i++; // Skip the private variant. Process the public line on the next iteration.
+        continue;
+      }
+      const text = battleLog(this.engine.log[i], id);
+      if (text) log.push(text);
+    }
+    return {
+      field: {
+        weather: this.engine.field.weather ? effectName(this.engine.field.getWeather().name) : null,
+        terrain: this.engine.field.terrain ? effectName(this.engine.field.getTerrain().name) : null,
+        effects: listEffects(this.engine.field.pseudoWeather),
+        own: listEffects(this.engine.getSide(id).sideConditions),
+        foe: listEffects(foeSide.sideConditions),
+      },
+      turn: this.engine.turn,
+      ended: this.engine.ended,
+      winner: this.engine.winner || null,
+      waiting: !this.engine.ended && !choices.length && !groups.length,
+      mode: this.engine.gameType,
+      own: describe(ownSide.active[0]),
+      foe: describe(foeSide.active[0]),
+      ownActive: activePokemon(ownSide),
+      foeActive: activePokemon(foeSide),
+      groups,
+      choices,
+      log: log.slice(-20),
+    };
+  }
+}
+
+module.exports = { BattleSession };

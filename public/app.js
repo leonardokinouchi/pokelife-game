@@ -1,0 +1,2833 @@
+const { leagueIsland, leaguePorts, hasLeagueAccess } = ExpeditionWorld;
+const $ = (id) => document.getElementById(id);
+const esc = (v) =>
+  String(v ?? "").replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        c
+      ],
+  );
+const btn = (text, action, data = {}, kind = "", item) =>
+  '<button class="' +
+  kind +
+  '" data-action="' +
+  action +
+  '" data-args="' +
+  esc(JSON.stringify(data)) +
+  '">' +
+  (item ? itemArt(item) : "") +
+  esc(text) +
+  "</button>";
+const opt = (value, text) =>
+  '<option value="' + esc(value) + '">' + esc(text) + "</option>";
+const panel = (title, body) =>
+  '<section class="panel"><h3>' + esc(title) + "</h3>" + body + "</section>";
+const select = (id, opts) =>
+  '<select aria-label="' + id + '" id="' + id + '">' + opts + "</select>";
+const v = (id) => $(id)?.value;
+const locName = (id) => LOCATIONS.find((l) => l.id === id)?.name || id;
+const phases = {
+  actions: "Expedição",
+  cards: "Cartas da rodada",
+  resumo: "Encontro dos treinadores",
+  trocas: "Mercado de trocas",
+  minigame: "Minigame",
+  duelos: "Duelos de treinadores",
+  final: "Classificação final",
+};
+const practiceMode = location.pathname === "/test-minigames/play";
+const sessionKey = practiceMode ? "auroraPractice" : "aurora";
+let session = JSON.parse(sessionStorage.getItem(sessionKey) || "null"),
+  state,
+  mode = "create",
+  busy = false,
+  mapMounted = false,
+  last = "",
+  polling = false,
+  sequence = 0,
+  timer;
+function toast(msg) {
+  $("toast").textContent = msg;
+  $("toast").hidden = false;
+  clearTimeout(timer);
+  timer = setTimeout(() => ($("toast").hidden = true), 3500);
+}
+let serverOffset = 0;
+async function request(payload) {
+  const sentAt = Date.now();
+  const response = await fetch("/api", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...session, ...payload }),
+  });
+  const data = await response.json();
+  if (data.clock) serverOffset = data.clock - (sentAt + Date.now()) / 2;
+  if (response.status === 403) {
+    session = null;
+    sessionStorage.removeItem(sessionKey);
+    const expired = $("sessionEnded");
+    if (!expired.open) expired.showModal();
+  }
+  if (!response.ok) throw Error(data.error || "Falha de conexão.");
+  return data;
+}
+const cardArt = {
+  tutorial: ["Tutorial", "city-pixel.png", "compass"],
+  fatigue: ["Cansaço", "neve-pixel.png", "footprints"],
+  lazy: ["Pokémon preguiçoso", "campo-pixel.png", "moon"],
+  unhappy: ["Pokémon infeliz", "campo-pixel.png", "moon"],
+  "cruel-trainer": ["Treinador do mal", "neve-pixel.png", "footprints"],
+};
+const readCards = new Set(JSON.parse(sessionStorage.getItem("auroraReadCards") || "[]"));
+let displayedCard = "", cardSince = 0, cardTimer;
+function renderCard(s) {
+  const dialog = $("roundCard");
+  clearTimeout(cardTimer);
+  if ($("evolutionScene").open) return;
+  const card = (s.cards || []).find(c => !readCards.has(c.id));
+  if (!card) {
+    if (dialog.open) dialog.close();
+    displayedCard = "";
+    renderEvolution(s);
+    return;
+  }
+  const owner = s.players.find(p => p.id === card.owner);
+  const mine = owner.id === s.you.id;
+  const current = card.id === s.activeCard;
+  if (displayedCard !== card.id) {
+    displayedCard = card.id;
+    cardSince = Date.now();
+    const [title, art, icon] = cardArt[card.type];
+    const text = {
+      tutorial: "Vá ao posto de trabalho, escolha uma vaga e trabalhe no local indicado. Com seu primeiro salário, compre Poké Bolas e explore um bioma para tentar sua primeira captura.",
+      fatigue: "Você percorreu mais de cinco trechos na última expedição. Comece esta rodada com duas ações a menos.",
+      lazy: (card.name || "") + " passou a rodada sem batalhar com seu treinador. Perde 10 de felicidade e fica paralisado.",
+      unhappy: card.name + " terminou a rodada passada insatisfeito. Se a felicidade ficar abaixo de 50, ele pode fugir. Acaricie seu Pokémon para aumentar a felicidade.",
+      "cruel-trainer": card.name + " fugiu por estar muito infeliz e saiu da sua coleção de Pokémon.",
+    };
+    dialog.innerHTML = '<div class="card-art" style="background-image:url(scenes/' + art +
+      ')"><span class="card-round">Rodada ' + s.round + ' · Cartas ' + (s.cards.indexOf(card) + 1) + '/' + s.cardCount + '</span></div><div class="card-copy"><span class="card-seal">' +
+      uiIcon(icon) + '</span><small>' + esc(owner.name) + '</small><h2 id="cardTitle">' + title +
+      '</h2><p>' + esc(text[card.type]) + '</p>' +
+      (mine && current ? btn("Continuar", "card", {id:card.id}, "primary") :
+        '<span class="card-wait">Leitura de ' + esc(owner.name) + '</span>') + '</div>';
+    if (!dialog.open) dialog.showModal();
+  }
+  if (!current) {
+    const delay = mine ? 0 : Math.max(0, 2200 - (Date.now() - cardSince));
+    cardTimer = setTimeout(() => {
+      readCards.add(card.id);
+      sessionStorage.setItem("auroraReadCards", JSON.stringify([...readCards].slice(-128)));
+      renderCard(state);
+    }, delay);
+  }
+}
+$("roundCard").oncancel = event => event.preventDefault();
+$("roundCard").onclick = event => {
+  if (event.target.closest("button") || displayedCard !== state?.activeCard) return;
+  const card = state.cards.find(c => c.id === displayedCard);
+  const bounds = $("roundCard").getBoundingClientRect();
+  if (card?.owner === state.you.id && event.clientX >= bounds.left &&
+      event.clientX <= bounds.right && event.clientY >= bounds.top && event.clientY <= bounds.bottom)
+    act("card", { id: card.id });
+};
+
+function setState(s) {
+  playPairFeedback(state?.pairGame, s.pairGame);
+  const soloEnd =
+    state?.you.enc?.battle &&
+    !s.you.enc &&
+    /Vitória|derrotada/.test(s.you.notice);
+  const duelEnd = state?.duel?.battle && !state.duel.result && s.duel?.result;
+  if (soloEnd || duelEnd) {
+    const won = soloEnd
+      ? s.you.notice.startsWith("Vitória")
+      : (s.duel.won ?? s.duel.result.startsWith(s.you.name + " venceu"));
+    battleEnding(won, soloEnd ? s.you.notice : s.duel.result);
+    if (soloEnd && state.you.enc.type === "elite" && s.phase === "actions" && !s.you.done) {
+      drawer = "facility";
+      activeFacility = "gym";
+    }
+  }
+  if (state && s.phase !== "final" && s.phase !== "cards" && state.phase !== "cards" &&
+      (state.phase !== s.phase || state.round !== s.round))
+    cinematic(
+      "phase",
+      "Rodada " + s.round + " · " + (phases[s.phase] || "Expedição"),
+      1500,
+    );
+  state = s;
+  const signature = JSON.stringify(s);
+  if (signature !== last) {
+    last = signature;
+    render();
+    renderCard(s);
+    renderMoveLesson(s);
+  }
+}
+
+function renderMoveLesson(s) {
+  const dialog = $("moveLesson");
+  const lesson = s.you.moveLesson;
+  if (!lesson || !["actions", "trocas"].includes(s.phase) || document.querySelector(".ending") ||
+      $("roundCard").open || $("evolutionScene").open) {
+    if (dialog.open) dialog.close();
+    return;
+  }
+  const key = lesson.uid + ":" + lesson.move;
+  if (dialog.open && dialog.dataset.lesson === key) return;
+  dialog.dataset.lesson = key;
+  const choice = { uid: lesson.uid, move: lesson.move };
+  dialog.innerHTML = '<h2 id="moveLessonTitle">Aprender golpe</h2><p>' +
+    esc(lesson.pokemon) + ' quer aprender <strong>' + esc(lesson.name) +
+    '</strong>. Qual golpe ele deve esquecer?</p><div class="move-lesson-options">' +
+    lesson.known.map((move) => btn("Esquecer " + move.name, "resolveMove",
+      { ...choice, replace: move.id })).join("") +
+    '</div><footer>' + btn("Não aprender " + lesson.name, "resolveMove",
+      { ...choice, replace: null }) + '</footer>';
+  if (!dialog.open) dialog.showModal();
+  dialog.querySelector("button").focus();
+}
+$("moveLesson").oncancel = (event) => event.preventDefault();
+
+const seenEvolutions = new Set(JSON.parse(sessionStorage.getItem("auroraSeenEvolutions") || "[]"));
+
+function renderEvolution(s) {
+  const dialog = $("evolutionScene");
+  if (dialog.open || $("roundCard").open || document.querySelector(".ending")) return;
+  const event = s.you.evolutions?.find(({ id }) => !seenEvolutions.has(id));
+  if (!event) return;
+  const lesson = $("moveLesson");
+  if (lesson.open) lesson.close();
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const duration = reduced ? 0 : 2300;
+  dialog.style.setProperty("--evolution-duration", duration + "ms");
+  dialog.classList.toggle("evolving", !reduced);
+  dialog.innerHTML = '<div class="evolution-backdrop" aria-hidden="true">' +
+    '<div class="evolution-ring"></div><div class="evolution-flash"></div>' +
+    '<div class="evolution-before">' + sprite(event.before) + '</div>' +
+    '<div class="evolution-after">' + sprite(event.after) + '</div></div>' +
+    '<h2 id="evolutionTitle" aria-live="polite">' +
+    esc(event.before.name) + ' está evoluindo!</h2>' +
+    '<button type="button" hidden>Continuar</button>';
+  const button = dialog.querySelector("button");
+  dialog.showModal();
+  const reveal = () => {
+    dialog.classList.remove("evolving");
+    dialog.classList.add("evolved");
+    $("evolutionTitle").textContent = event.before.name + " evoluiu para " + event.after.name + "!";
+    button.hidden = false;
+    button.focus();
+  };
+  if (duration) setTimeout(reveal, duration);
+  else reveal();
+  button.onclick = () => {
+    seenEvolutions.add(event.id);
+    sessionStorage.setItem("auroraSeenEvolutions", JSON.stringify([...seenEvolutions].slice(-128)));
+    dialog.classList.remove("evolved");
+    dialog.close();
+    renderCard(state);
+    renderMoveLesson(state);
+  };
+}
+$("evolutionScene").oncancel = (event) => {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector("button");
+  if (!button.hidden) button.click();
+};
+
+async function act(action, data = {}) {
+  if (busy) return;
+  busy = true;
+  sequence++;
+  try {
+    const out = await request({ action, ...data });
+    if (out.token) {
+      session = { token: out.token, code: out.state.code };
+      sessionStorage.setItem(sessionKey, JSON.stringify(session));
+    }
+    if (action === "catch")
+      await animateCapture(data.ball, out.caught);
+    if (action === "heal" && activeFacility === "center") await showHealing(out.state.you.party);
+    if (action === "move" && out.state.you.loc === leagueIsland) {
+      drawer = "facility";
+      activeFacility = "gym";
+    }
+    if (action === "shop" || action === "leaveShop") shopCart.clear();
+    if (action === "offer" || action === "counter") {
+      tradeDraft = {give:[], want:[]};
+      tradeCounter = tradeConfirm = "";
+      tradeTab = "sent";
+      tradeMobile = "inbox";
+      toast(action === "counter" ? "Contraproposta enviada." : "Oferta enviada.");
+    }
+    if (out.tradeNotice) {
+      tradeConfirm = "";
+      tradeTab = "history";
+      toast(out.tradeNotice);
+    }
+    setState(out.state);
+    if (action === "move")
+      toast(locName(out.state.you.loc) + " · 1 ação gasta · " +
+        out.state.you.actions + " restantes");
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    busy = false;
+  }
+}
+async function poll() {
+  if (!session || busy || polling) return;
+  polling = true;
+  const issued = sequence;
+  try {
+    const out = await request({ action: "state" });
+    if (sequence === issued && !busy) setState(out.state);
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    polling = false;
+  }
+}
+const invite = new URLSearchParams(location.search).get("sala");
+function switchMode(m) {
+  mode = m;
+  document
+    .querySelectorAll(".tab")
+    .forEach((b) => b.classList.toggle("active", b.dataset.mode === m));
+  $("codeRow").hidden = m === "create";
+  $("gateAvatars").hidden = m === "join";
+  $("roomCode").required = m === "join";
+  $("gateSubmit").textContent =
+    m === "join" ? "Entrar na sala" : "Criar minha sala";
+}
+if (invite) {
+  switchMode("join");
+  $("roomCode").value = invite.toUpperCase().slice(0, 5);
+}
+$("gateForm").onsubmit = (e) => {
+  e.preventDefault();
+  act(mode, {
+    name: v("trainer"),
+    code: v("roomCode").trim().toUpperCase(),
+    avatar: mode === "create" ? $("gateAvatars").querySelector(":checked")?.value : undefined,
+  });
+};
+function trainerSprite(avatar, className, alt = "") {
+  const id = Object.hasOwn(ExpeditionWorld.avatars, avatar) ? avatar : "mar";
+  return '<img class="' + className + '" src="trainers/' + id + '.png" alt="' + esc(alt) + '">';
+}
+
+$("gateAvatars").insertAdjacentHTML("beforeend",
+  Object.entries(ExpeditionWorld.avatars).map(([id, name], index) =>
+    '<label><input type="radio" name="avatar" value="' + id + '"' +
+    (index ? '' : ' checked') + '><span>' + trainerSprite(id, "trainer-preview") +
+    esc(name) + '</span></label>',
+  ).join(""),
+);
+
+function room() {
+  const s = state,
+    p = s.you,
+    host = p.id === s.host;
+  const { avatars, maxPlayers, validPlayerCount } = ExpeditionWorld;
+  const occupied = new Map(s.players.filter(q => q.id !== p.id).map(q => [q.avatar, q.name]));
+  const canStart = validPlayerCount(s.players.length) && s.players.every(q => q.ready);
+  return panel(
+    "Sala " + s.code,
+    '<div class="row"><span>' +
+      s.players.length +
+      " / " + maxPlayers + " treinadores</span>" +
+      btn("Copiar código", "copy") +
+      "</div>" +
+      s.players
+        .map(
+          (q) =>
+            '<div class="row roster"><b>' +
+            trainerSprite(q.avatar, "trainer-preview") + esc(q.name) +
+            "</b><span>" +
+            (q.ready ? "Pronto" : "Preparando") +
+            "</span></div>",
+        )
+        .join("") +
+      '<fieldset class="avatar-picker"><legend>Personagem</legend>' +
+      Object.entries(avatars)
+        .map(([id, name]) => {
+          const taken = occupied.has(id);
+          return '<button type="button" aria-pressed="' + (p.avatar === id) +
+            `" data-action="avatar" data-args='${JSON.stringify({ avatar: id })}'` +
+            (taken ? ' disabled title="Em uso por ' + esc(occupied.get(id)) + '"' : "") + ">" +
+            trainerSprite(id, "trainer-preview") + esc(name) +
+            (taken ? '<small>Em uso</small>' : "") + "</button>";
+        }).join("") + "</fieldset>" +
+      (host
+        ? '<div class="grid2"><label>Rodadas<input id="rounds" type="number" min="1" max="40" value="8"></label><label>Multiplicador de XP<input id="mult" type="number" min=".25" max="30" step=".25" value="3"></label></div><label>Minigame' +
+          select("mini", opt("yes", "Ativado") + opt("no", "Desativado")) +
+          "</label>"
+        : "") +
+      '<div class="btnline">' +
+      btn(
+        p.ready ? "Desmarcar pronto" : "Estou pronto",
+        "ready",
+        {},
+        "primary",
+      ) +
+      (host ? '<button class="primary" data-action="start"' +
+        (canStart ? "" : " disabled") + ">Iniciar expedição</button>" : "") +
+      btn("Sair da sala", "leave") +
+      '</div><p class="note">A expedição começa com 2, 4, 6, 8, 10 ou 12 treinadores prontos.</p><details><summary>Como vencer</summary><p>Cada espécie registrada vale 3 pontos e cada captura shiny vale 10. Cada ₽ 200 no saldo final vale 1 ponto. Cada insígnia vale 10 e completar a Elite Four vale 40. Cada carinho vale 1 ponto e cada vitória em duelo ou minigame vale 5.</p></details>',
+  );
+}
+function bars(m) {
+  return (
+    '<div class="bars">HP <progress style="accent-color:' +
+    (m.hp / m.maxhp <= 0.2
+      ? "#e45656"
+      : m.hp / m.maxhp <= 0.5
+        ? "#e9c54b"
+        : "#3b9964") +
+    '" value="' +
+    m.hp +
+    '" max="' +
+    m.maxhp +
+    '"></progress><span>' +
+    m.hp +
+    "/" +
+    m.maxhp +
+    "</span></div>" +
+    (m.xpNeeded != null
+      ? '<div class="bars">XP <progress class="xp" value="' +
+        (m.xpIntoLevel || 0) +
+        '" max="' +
+        (m.xpNeeded || 1) +
+        '"></progress><span>' +
+        m.xpIntoLevel +
+        "/" +
+        m.xpNeeded +
+        "</span></div>"
+      : "")
+  );
+}
+function showMon(m, full = false) {
+  return (
+    '<div class="slot"><div class="battlecard">' +
+    tokenMon(m) +
+    "<div><b>" +
+    esc(m.name) +
+    "</b> · Nv. " +
+    m.level +
+    bars(m) +
+    "</div></div>" +
+    (full
+      ? "<small>FELICIDADE " +
+        m.happiness +
+        " / 255" +
+        (m.heldItem
+          ? " · " + esc(state.shop[m.heldItem]?.name || m.heldItem)
+          : "") +
+        "</small>"
+      : "") +
+    "</div>"
+  );
+}
+function itemUseForm(p, id) {
+  if (state.phase !== "actions" || p.done || p.enc || (!p.actions && p.eliteRun == null)) return "";
+  const targets = [...p.party, ...p.box];
+  const usable = Object.entries(p.items).filter(([item, qty]) =>
+    qty > 0 && state.shop[item] && !item.endsWith("-ball"));
+  if (!targets.length || !usable.length) return "";
+  return '<details class="task" id="' + id + '"><summary>' +
+    (p.eliteRun == null ? "Usar item · 1 ação" : "Usar item no intervalo") + '</summary>' +
+    '<label>Item' + select(id + "Item", usable.map(([item, qty]) =>
+      opt(item, state.shop[item].name + " ×" + qty)).join("")) + '</label>' +
+    '<label>Pokémon' + select(id + "Mon", targets.map((m) => opt(m.uid, m.name)).join("")) +
+    '</label>' + btn("Aplicar", "useItem", { form: id }) + '</details>';
+}
+
+function inventory() {
+  const p = state.you,
+    can = state.phase === "actions" && !p.done && !p.enc;
+  const mons = (list, box) =>
+    list
+      .map(
+        (m) =>
+          showMon(m, true) +
+          (can
+            ? '<div class="buttons">' +
+              btn(box ? "Mover à equipe" : "Mover à box", "box", {
+                uid: m.uid,
+              }) +
+              (!box && p.party[0] !== m
+                ? btn("Liderar equipe", "lead", { uid: m.uid })
+                : "") +
+              (p.actions
+                ? btn("Acariciar · 1 ação", "pet", { uid: m.uid })
+                : "") +
+              "</div>"
+            : ""),
+      )
+      .join("");
+  return (
+    panel(
+      "Equipe · " + p.party.length + "/6",
+      mons(p.party, false) ||
+        "<p>Você começa sem Pokémon. Trabalhe, compre uma Poké Bola e explore um bioma.</p>",
+    ) +
+    panel(
+      "Box Pokémon · " + p.box.length,
+      '<details id="boxDetails"><summary>Abrir box</summary>' +
+        (mons(p.box, true) || "Nenhum Pokémon na box.") +
+        "</details>",
+    ) +
+    panel(
+      "Mochila",
+      (Object.entries(p.items)
+        .filter(([, n]) => n > 0)
+        .map(
+          ([id, n]) =>
+            '<div class="row roster" tabindex="0" data-item-summary="' + esc(id) + '">' +
+            itemArt(id) +
+            esc(state.shop[id]?.name || id) +
+            " <b>× " +
+            n +
+            "</b></div>",
+        )
+        .join("") || "A mochila está vazia.") + itemUseForm(p, "bagUse"),
+    )
+  );
+}
+function battleUI(b) {
+  return (
+    (b.foe ? showMon(b.foe) : "") +
+    (b.own ? showMon(b.own) : "") +
+    '<div class="buttons">' +
+    b.choices
+      .map((c) =>
+        btn(c.label + (c.pp != null ? " (" + c.pp + " PP)" : ""), "fight", {
+          cmd: c.command,
+        }),
+      )
+      .join("") +
+    "</div>" +
+    (b.waiting ? "<p>Aguardando o adversário…</p>" : "") +
+    '<div class="log">' +
+    b.log.slice(-4).map(esc).join("<br>") +
+    "</div>"
+  );
+}
+function actions() {
+  const p = state.you,
+    e = p.enc;
+  if (e) {
+    let html = e.battle ? battleUI(e.battle) : showMon(e.wild);
+    if (e.type === "wild")
+      html +=
+        '<div class="btnline">' +
+        Object.entries(p.items)
+          .filter(([id, n]) => id.endsWith("-ball") && n > 0)
+          .map(([id, n]) =>
+            btn(state.shop[id].name + " ×" + n, "catch", { ball: id }, "", id),
+          )
+          .join("") +
+        btn("Fugir", "flee") +
+        "</div>";
+    return panel(
+      e.type === "wild"
+        ? "Encontro selvagem"
+        : e.type === "gym"
+          ? "Batalha de ginásio"
+          : "Elite Four",
+      html,
+    );
+  }
+  const location = LOCATIONS.find((l) => l.id === p.loc);
+  let html = "";
+  if (p.loc === leagueIsland) {
+    const { reason } = gymDetails(p);
+    return panel(location.name, reason ? esc(reason) : btn("Desafiar Elite Four", "gym"));
+  }
+  if (p.actions) {
+    if (location.kind === "biome")
+      html += btn("Explorar " + location.name, "explore", {}, "primary");
+    else {
+      html +=
+        '<div class="btnline">' +
+        (p.needsHealing && p.money >= state.healCost ? btn("Curar equipe · ₽ " + state.healCost + " · 1 ação", "heal") : "") +
+        (p.loc === "city" + (p.badges.length + 1)
+          ? btn(
+              "Desafiar ginásio · Nv. " + (p.badges.length + 1) * 10,
+              "gym",
+            )
+          : "") +
+        "</div>";
+      html += btn("Abrir Loja Pokémon", "enterShop");
+    }
+    html += itemUseForm(p, "use");
+  }
+  return panel(location.name, html);
+}
+function roster(q) {
+  return (
+    '<div class="slot"><div class="row"><b>' +
+    esc(q.name) +
+    "</b><b>₽ " +
+    q.money +
+    "</b></div><p>Equipe · " +
+    (q.party.map((m) => esc(m.name) + " Nv. " + m.level).join(", ") ||
+      "Vazia") +
+    "</p><p>Box · " +
+    (q.box.map((m) => esc(m.name)).join(", ") || "Vazia") +
+    "</p><p>Mochila · " +
+    (Object.entries(q.items)
+      .filter(([, n]) => n)
+      .map(([i, n]) => esc(state.shop[i]?.name || i) + " ×" + n)
+      .join(", ") || "Vazia") +
+    "</p></div>"
+  );
+}
+const tradeLabels = {
+  pending:"Pendente", accepted:"Concluída", declined:"Recusada",
+  cancelled:"Cancelada", countered:"Substituída", invalid:"Inválida",
+};
+let tradeRound = 0, tradePartner = "", tradeTab = "received", tradeMobile = "table";
+let tradeDraft = {give:[], want:[]}, tradeCounter = "", tradeConfirm = "";
+const tradeList = value => Array.isArray(value) ? value : [value];
+const isPendingTrade = offer => !offer.status || offer.status === "pending";
+const tradeKey = a => a.kind === "money" ? "money" : a.kind + ":" + a.id;
+function tradeInventory(q) {
+  return [
+    ...(q.money > 0 ? [{kind:"money", qty:q.money}] : []),
+    ...Object.entries(q.items).filter(([id, qty]) => qty > 0 && state.shop[id])
+      .map(([id, qty]) => ({kind:"item", id, qty})),
+    ...[...q.party, ...q.box].map((pokemon, index) => ({kind:"mon", id:pokemon.uid, pokemon,
+      inParty:index < q.party.length})),
+  ];
+}
+function tradeAssetTitle(a) {
+  if (a.kind === "money") return "Moedas";
+  if (a.kind === "item") return state.shop[a.id]?.name || a.id;
+  return a.pokemon?.name || "Pokémon indisponível";
+}
+function tradeAssetCard(a, side) {
+  const pokemon = a.pokemon;
+  const remove = side ? btn("Remover", "tradeRemove", {side, key:tradeKey(a)}) : "";
+  if (a.kind !== "mon") return '<li class="exchange-asset"><strong>' + esc(tradeAssetTitle(a)) +
+    '</strong><span>' + (a.kind === "money" ? "₽ " : "× ") + esc(a.qty) + '</span>' + remove + '</li>';
+  const detail = pokemon ? '<details><summary>' + esc(pokemon.name) + '</summary><small>Nível ' +
+    esc(pokemon.level) + (pokemon.types?.length ? ' · ' + esc(pokemon.types.join(" / ")) : '') +
+    (pokemon.hp != null ? ' · HP ' + esc(pokemon.hp) + '/' + esc(pokemon.maxhp) : '') +
+    '</small></details><small>' + (a.inParty ? 'Equipe' : 'Box') +
+    (pokemon.shiny ? ' · ✦ Shiny' : '') + (a.evolves ? ' · Evolui na troca' : '') + '</small>' :
+    '<strong>Pokémon indisponível</strong>';
+  return '<li class="exchange-asset exchange-pokemon">' + (pokemon ? sprite(pokemon) : '') +
+    '<div>' + detail + '</div>' + remove + '</li>';
+}
+function tradeAssetsView(assets, owner) {
+  const inventory = new Map(tradeInventory(owner).map(a => [tradeKey(a), a]));
+  return '<ul class="exchange-assets">' + tradeList(assets).map(a => {
+    const current = a.kind === "mon" && inventory.get(tradeKey(a));
+    return tradeAssetCard(a.pokemon || !current ? a : {...current, ...a});
+  }).join("") + '</ul>';
+}
+function tradeEditor(side, title, owner) {
+  const draft = tradeDraft[side];
+  const inventory = tradeInventory(owner);
+  return '<section class="exchange-side"><h4>' + title + '</h4><ul class="exchange-assets">' +
+    draft.map(a => {
+      const latest = inventory.find(b => tradeKey(b) === tradeKey(a));
+      return tradeAssetCard({...latest, ...a}, side);
+    }).join("") + '</ul>' +
+    '<div class="exchange-add"><label>Bem<select id="tradeAsset-' + side + '">' +
+    inventory.map(a => opt(tradeKey(a), tradeAssetTitle(a) + (a.kind === "money" ? "" :
+      a.kind === "item" ? " ×" + a.qty : " · Nv. " + a.pokemon.level + (a.pokemon.shiny ? " ✦" : "")))).join("") +
+    '</select></label><label>Qtd.<input id="tradeQty-' + side + '" type="number" min="1" step="1" value="1"></label>' +
+    '<button data-action="tradeAdd" data-args=\'' + JSON.stringify({side}) + '\'' +
+    (inventory.length ? '' : ' disabled') + '>Adicionar</button></div></section>';
+}
+const tradeCoins = assets => tradeList(assets).find(a => a.kind === "money")?.qty || 0;
+function tradeWarning(outgoing, incoming) {
+  const p = state.you;
+  if (p.party.length && p.party.every(m => tradeList(outgoing).some(a => a.kind === "mon" && a.id === m.uid)) &&
+    !tradeList(incoming).some(a => a.kind === "mon"))
+    return '<p class="exchange-warning" role="status">Esta troca deixaria sua equipe vazia antes dos duelos.</p>';
+  return "";
+}
+function tradeOfferCard(o) {
+  const p = state.you, incoming = o.to === p.id;
+  const give = incoming ? o.want : o.give, want = incoming ? o.give : o.want;
+  const q = state.players.find(q => q.id === (incoming ? o.from : o.to));
+  let actions = "";
+  if (isPendingTrade(o) && !p.done) {
+    actions = incoming ? btn("Revisar e aceitar", "tradeReview", {id:o.id}, "primary") +
+      btn("Contraproposta", "tradeCounter", {id:o.id}) + btn("Recusar", "decline", {id:o.id}) :
+      btn("Cancelar oferta", "cancel", {id:o.id});
+  }
+  return '<article class="exchange-offer"><header><strong>' + esc(q.name) + '</strong><span>' +
+    tradeLabels[o.status || "pending"] + '</span></header>' +
+    '<div class="exchange-terms"><section><h4>Você entrega</h4>' + tradeAssetsView(give, p) +
+    '</section><section><h4>Você recebe</h4>' + tradeAssetsView(want, q) + '</section></div>' +
+    (o.reason ? '<p class="exchange-warning">' + esc(o.reason) + '</p>' : '') +
+    (tradeConfirm === o.id && isPendingTrade(o) ?
+      '<div class="exchange-review"><strong>Saldo após a troca: ₽ ' + (p.money - tradeCoins(give) + tradeCoins(want)) +
+      '</strong>' + tradeWarning(give, want) + '<div class="exchange-buttons">' +
+      btn("Confirmar troca", "accept", {id:o.id}, "primary") + btn("Voltar", "tradeBack") + '</div></div>' :
+      '<div class="exchange-buttons">' + actions + '</div>') + '</article>';
+}
+function trade() {
+  const p = state.you, offers = state.offers;
+  if (tradeRound !== state.round || !state.players.some(q => q.id === tradePartner)) {
+    tradeRound = state.round;
+    tradePartner = state.players.find(q => q.id !== p.id && !q.done)?.id || "";
+    tradeDraft = {give:[], want:[]};
+    tradeCounter = tradeConfirm = "";
+    tradeTab = "received";
+    tradeMobile = "table";
+  }
+  const others = state.players.filter(q => q.id !== p.id);
+  const partner = others.find(q => q.id === tradePartner);
+  const pending = offers.filter(isPendingTrade);
+  const scoped = offers.filter(o => [o.from, o.to].includes(tradePartner));
+  const groups = {
+    received:scoped.filter(o => isPendingTrade(o) && o.to === p.id),
+    sent:scoped.filter(o => isPendingTrade(o) && o.from === p.id),
+    history:scoped.filter(o => !isPendingTrade(o)).reverse(),
+  };
+  const people = others.map(q => {
+    const count = pending.filter(o => o.from === q.id && o.to === p.id).length;
+    return '<button class="exchange-person" data-action="tradePartner" data-args=\'' +
+      esc(JSON.stringify({id:q.id})) + '\' aria-pressed="' + (q.id === tradePartner) + '">' +
+      trainerSprite(q.avatar, "trainer-preview") + '<span><strong>' + esc(q.name) +
+      '</strong><small>' + (q.done ? 'Encerrou' : 'Negociando') + '</small></span>' +
+      (count ? '<b aria-label="' + count + ' ofertas recebidas">' + count + '</b>' : '') + '</button>';
+  }).join("");
+  let table = '<p class="exchange-empty">Selecione um treinador disponível.</p>';
+  if (p.done) table = '<p class="exchange-empty">Aguardando os outros treinadores.</p>';
+  else if (partner?.done) table = '<p class="exchange-empty">Este treinador encerrou as negociações.</p>';
+  else if (partner) table = '<header><h3>' + (tradeCounter ? 'Contraproposta para ' : 'Negociar com ') +
+    esc(partner.name) + '</h3><span>Saldo · ₽ ' + p.money + '</span></header>' +
+    '<div class="exchange-terms">' + tradeEditor("give", "Você entrega", p) +
+    tradeEditor("want", "Você recebe", partner) + '</div>' +
+    tradeWarning(tradeDraft.give, tradeDraft.want) +
+    '<div class="exchange-buttons"><button class="primary" data-action="tradeSend"' +
+    (!tradeDraft.give.length || !tradeDraft.want.length ? ' disabled' : '') + '>' +
+    (tradeCounter ? 'Enviar contraproposta' : 'Enviar oferta') + '</button>' +
+    (tradeCounter ? btn("Descartar rascunho", "tradeDiscard") : '') + '</div>';
+  const tabs = [["received","Recebidas"], ["sent","Enviadas"], ["history","Histórico"]]
+    .map(([id,name]) => '<button data-action="tradeTab" data-args=\'' + JSON.stringify({id}) +
+      '\' aria-pressed="' + (tradeTab === id) + '">' + name + ' · ' + groups[id].length + '</button>').join("");
+  return '<section class="exchange" data-mobile="' + tradeMobile + '"><header><h2>Mercado de trocas</h2></header>' +
+    '<div class="exchange-layout"><aside class="exchange-people"><h3>Treinadores</h3>' + people + '</aside>' +
+    '<div class="exchange-mobile" aria-label="Seções do mercado">' + btn("Proposta", "tradeMobile", {id:"table"}) +
+    btn("Ofertas (" + pending.filter(o => o.to === p.id).length + ")", "tradeMobile", {id:"inbox"}) + '</div>' +
+    '<main class="exchange-table">' + table + '</main><aside class="exchange-inbox"><h3>Ofertas</h3>' +
+    '<div class="exchange-tabs">' + tabs + '</div>' + (groups[tradeTab].length ?
+      groups[tradeTab].map(tradeOfferCard).join("") : '<p class="exchange-empty">Nenhuma oferta nesta aba.</p>') +
+    '</aside></div><details id="exchangeRosters"><summary>Consultar treinadores</summary>' +
+    trainerGrid() + '</details><footer>' + (p.done ? 'Você encerrou as negociações.' : tradeConfirm === "finish" ?
+      '<p>' + pending.length + ' oferta(s) pendente(s) serão canceladas. Encerrar negociações?</p>' +
+      btn("Confirmar encerramento", "finish", {}, "primary") + btn("Voltar", "tradeBack") :
+      btn("Encerrar negociações", "tradeFinish")) + '</footer></section>';
+}
+
+function tradeInteraction(action, d) {
+  if (action === "tradePartner") {
+    if (tradePartner !== d.id) {
+      tradePartner = d.id;
+      tradeDraft = {give:[], want:[]};
+      tradeCounter = tradeConfirm = "";
+      tradeTab = "received";
+    }
+  } else if (action === "tradeTab") {
+    tradeTab = d.id;
+    tradeConfirm = "";
+  } else if (action === "tradeMobile") {
+    tradeMobile = d.id;
+  } else if (action === "tradeAdd") {
+    const owner = d.side === "give" ? state.you : state.players.find(q => q.id === tradePartner);
+    const asset = tradeInventory(owner).find(a => tradeKey(a) === v("tradeAsset-" + d.side));
+    if (!asset) return;
+    const side = tradeDraft[d.side];
+    const existing = side.find(a => tradeKey(a) === tradeKey(asset));
+    if (asset.kind === "mon") {
+      if (existing) return toast("Este Pokémon já está na proposta.");
+      side.push(asset);
+    } else {
+      const qty = Number(v("tradeQty-" + d.side));
+      if (!Number.isSafeInteger(qty) || qty < 1 || qty + (existing?.qty || 0) > asset.qty)
+        return toast("Quantidade superior ao disponível ou inválida.");
+      if (existing) existing.qty += qty;
+      else side.push({...asset, qty});
+    }
+  } else if (action === "tradeRemove") {
+    tradeDraft[d.side] = tradeDraft[d.side].filter(a => tradeKey(a) !== d.key);
+  } else if (action === "tradeCounter") {
+    const offer = state.offers.find(o => o.id === d.id && o.to === state.you.id && isPendingTrade(o));
+    if (!offer) return;
+    tradePartner = offer.from;
+    tradeCounter = offer.id;
+    tradeDraft = {give:structuredClone(tradeList(offer.want)), want:structuredClone(tradeList(offer.give))};
+    tradeConfirm = "";
+    tradeMobile = "table";
+  } else if (action === "tradeDiscard") {
+    tradeCounter = "";
+    tradeDraft = {give:[], want:[]};
+  } else if (action === "tradeReview") {
+    tradeConfirm = d.id;
+  } else if (action === "tradeFinish") {
+    tradeConfirm = "finish";
+  } else if (action === "tradeBack") {
+    tradeConfirm = "";
+  } else if (action === "tradeSend") {
+    const payload = {id:tradeCounter || undefined, to:tradePartner};
+    for (const side of ["give", "want"])
+      payload[side] = tradeDraft[side].map(({kind,id,qty}) => ({kind,id,qty}));
+    act(tradeCounter ? "counter" : "offer", payload);
+    return;
+  }
+  render();
+}
+
+function controls() {
+  if (state.phase === "trocas") return trade();
+  const s = state,
+    p = s.you;
+  if (p.done)
+    return (
+      panel(
+        "Aguardando o grupo",
+        s.players
+          .map(
+            (q) =>
+              '<div class="row roster">' +
+              esc(q.name) +
+              "<b>" +
+              (q.done ? "Concluído" : "Jogando") +
+              "</b></div>",
+          )
+          .join("") + (s.phase === "actions" || s.phase === "resumo"
+            ? '<div class="summary-actions"><button data-drawer="box">Abrir Box</button></div>'
+            : ""),
+      )
+    );
+  if (s.phase === "actions") return actions();
+  if (s.phase === "resumo")
+    return panel(
+      "Resumo dos treinadores",
+      trainerGrid() + '<div class="summary-actions"><button data-drawer="box">Abrir Box</button>' +
+      btn("Ir para as trocas", "finish", {}, "primary") + '</div>',
+    );
+  const d = s.duel;
+  return (
+    panel(
+      "Duelo com " + d.opponent,
+      d.result
+        ? "<p>" +
+            esc(d.result) +
+            "</p>" +
+            btn("Concluir rodada", "finish", {}, "primary")
+        : battleUI(d.battle),
+    )
+  );
+}
+function render() {
+  $("itemTooltip").hidden = true;
+  const s = state,
+    p = s.you;
+  const active = document.activeElement?.id;
+  const values = new Map(
+    [...document.querySelectorAll("input[id],select[id]")].map((el) => [
+      el.id,
+      el.value,
+    ]),
+  );
+  const opened = [...document.querySelectorAll("details[open]")].map(
+    (el) => el.id,
+  );
+  $("topStatus").textContent =
+    "SALA " + s.code + " · " + s.players.length + " TREINADORES";
+  if (s.phase === "lobby") {
+    document.body.classList.add("in-room");
+    $("gate").hidden = true;
+    $("roomPanel").innerHTML = room();
+  } else {
+    $("lobby").hidden = true;
+    $("game").hidden = false;
+    renderWorld();
+  }
+  for (const [id, value] of values) {
+    const el = $(id);
+    if (
+      el &&
+      id !== "destination" &&
+      (id !== "auctionBid" || Number(value) >= Number(el.min)) &&
+      (!el.options || [...el.options].some((o) => o.value === value))
+    )
+      el.value = value;
+  }
+  if ($("labFields")) updateLabTotal();
+  opened.forEach((id) => {
+    if ($(id)) $(id).open = true;
+  });
+  if (active) $(active)?.focus({ preventScroll: true });
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.mode) {
+    switchMode(b.dataset.mode);
+    return;
+  }
+  let k = b.dataset.action;
+  if (!k) return;
+  const d = JSON.parse(b.dataset.args || "{}");
+  if (k === "home") {
+    sessionStorage.removeItem(sessionKey);
+    if (practiceMode) window.top.location.assign("/test-minigames");
+    else location.assign("/");
+    return;
+  }
+  if (k === "leave") {
+    request({ action: "leave" })
+      .then(() => {
+        sessionStorage.removeItem(sessionKey);
+        location.assign(practiceMode ? "/test-minigames" : "/");
+      })
+      .catch((e) => toast(e.message));
+    return;
+  }
+  if (k === "copy") {
+    navigator.clipboard
+      ?.writeText(state.code)
+      .then(() => toast("Código copiado."))
+      .catch(() => toast(state.code));
+    toast("Código da sala: " + state.code);
+    return;
+  }
+  if (k === "start")
+    Object.assign(d, {
+      rounds: +v("rounds"),
+      mult: +v("mult"),
+      mini: v("mini") === "yes",
+    });
+  if (k === "modifyPokemon") {
+    const fields = $("labFields");
+    if (!fields || [...fields.querySelectorAll("input")].some(input => !input.reportValidity())) return;
+    d.uid = v("labPokemon");
+    d.nature = v("labNature");
+    d.abilitySlot = v("labAbility");
+    d.ivs = Object.fromEntries(labStats.map(([stat]) => [stat, Number(v("labIv-" + stat))]));
+    d.evs = Object.fromEntries(labStats.map(([stat]) => [stat, Number(v("labEv-" + stat))]));
+  }
+  if (k === "useItem") {
+    k = "item";
+    d.item = v(d.form + "Item");
+    d.uid = v(d.form + "Mon");
+  }
+  if (k === "duelTeam") d.uids = [...duelPicks];
+  if (k === "groupFight") {
+    const selections = [...$("arena").querySelectorAll(".group-battle-actions select")].map(el => el.value);
+    if (!selections.length || selections.some(value => !value)) {
+      toast("Escolha uma ação para cada Pokémon.");
+      return;
+    }
+    k = "fight";
+    d.cmd = selections.join(", ");
+  }
+  if (k === "dodge" && Date.now() + serverOffset < state.race.startsAt) return;
+  if (k === "bid") d.amount = Number(v("auctionBid"));
+  if (k === "answer") {
+    if (v("answer") === "") {
+      toast("Digite um valor.");
+      return;
+    }
+    k = "quiz";
+    d.answer = +v("answer");
+  }
+  if (k.startsWith("trade")) {
+    tradeInteraction(k, d);
+    return;
+  }
+  if (k === "millionSkip") {
+    finishMillionReveal();
+    return;
+  }
+  act(k, d);
+});
+const shopCart = new Map();
+const personalPanels = new Set(["team", "box", "bag", "profile"]);
+let personalDrawer = "";
+let drawer = "",
+  activeFacility = "",
+  shopItem = "",
+  shopFilter = "all",
+  shopMode = "buy",
+  combatMenu = "move",
+  oldBattle = null,
+  previousPhase = "",
+  previouslyDone = false,
+  lastNotice = "",
+  audio;
+let muted = localStorage.auroraMute === "1";
+function tone(hit = false) {
+  if (muted) return;
+  try {
+    audio ??= new AudioContext();
+    audio.resume();
+    const t = audio.currentTime,
+      o = audio.createOscillator(),
+      v = audio.createGain();
+    o.type = hit ? "sawtooth" : "triangle";
+    o.frequency.setValueAtTime(hit ? 210 : 620, t);
+    o.frequency.exponentialRampToValueAtTime(hit ? 45 : 870, t + 0.09);
+    v.gain.setValueAtTime(0.055, t);
+    v.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+    o.connect(v).connect(audio.destination);
+    o.start();
+    o.stop(t + 0.12);
+  } catch {}
+}
+function uiIcon(name) {
+  return '<svg class="hud-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" ' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<use href="#icon-' + name + '"></use></svg>';
+}
+const menuBtn = (id, label, icon) =>
+  '<button data-drawer="' + id + '" aria-pressed="' + ((personalPanels.has(id) ? personalDrawer : drawer) === id) + '">' +
+  uiIcon(icon) + esc(label) + '</button>';
+function initializeScreen() {
+  for (const type of ["pointerover", "pointerout", "focusin", "focusout"])
+    $("arena").addEventListener(type, updateMoveTooltip);
+  $("sound").textContent = muted ? "♪ ×" : "♪";
+  $("sound").onclick = () => {
+    muted = !muted;
+    localStorage.auroraMute = muted ? "1" : "0";
+    $("sound").textContent = muted ? "♪ ×" : "♪";
+  };
+  $("fullscreen").onclick = () => {
+    const task = document.fullscreenElement
+      ? document.exitFullscreen()
+      : document.documentElement.requestFullscreen?.();
+    task?.catch(() => toast("Tela cheia indisponível."));
+  };
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    tone(b.dataset.action === "fight");
+    if (b.dataset.qtyStep) {
+      const quantity = $("qty");
+      if (b.dataset.qtyStep === "up") quantity.stepUp();
+      else quantity.stepDown();
+    }
+    if (b.dataset.shopMode || b.dataset.shopFilter) {
+      if (b.dataset.shopMode) {
+        shopMode = b.dataset.shopMode;
+        shopFilter = "all";
+      } else shopFilter = b.dataset.shopFilter;
+      updateCatalog(true);
+    }
+    if (b.dataset.postScroll) {
+      const jobs = $("postJobs");
+      jobs?.scrollBy({ left: Number(b.dataset.postScroll) * jobs.clientWidth * .85,
+        behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    }
+    if (b.dataset.shopItem) {
+      shopItem = b.dataset.shopItem;
+      updateCatalog();
+      $("shopCatalog").querySelector('[aria-pressed="true"]')?.focus({ preventScroll: true });
+    }
+    if (b.dataset.enterLeague && !leagueEntryReason()) {
+      if (state.you.loc === leagueIsland) {
+        drawer = "facility";
+        activeFacility = "gym";
+        render();
+        $("dismiss").focus();
+      } else {
+        act("move", { loc: leagueIsland });
+      }
+    }
+    if (b.dataset.confirmFacility) {
+      drawer = "facility";
+      render();
+      $("dismiss").focus();
+    }
+    if (b.dataset.cartAdd && !busy) addToShopCart(b.dataset.cartAdd === "sell");
+    if (b.dataset.cartRemove && !busy) {
+      shopCart.delete(b.dataset.cartRemove);
+      renderShopCart();
+    }
+    if (b.hasAttribute("data-checkout") && shopCart.size)
+      act("shop", { lines: [...shopCart.values()] });
+    if (b.dataset.facility === "center" || b.dataset.facility === "post" ||
+        b.dataset.facility === "lab") {
+      activeFacility = b.dataset.facility;
+      drawer = "facility";
+      render();
+      $("dismiss").focus();
+    } else if (b.dataset.facility === "store") {
+      activeFacility = "store";
+      act("enterShop");
+    } else if (b.dataset.facility) {
+      activeFacility = activeFacility === b.dataset.facility ||
+        b.dataset.facility === "close" ? "" : b.dataset.facility;
+      render();
+    }
+    if (b.dataset.drawer && !busy) {
+      const target = b.dataset.drawer;
+      if (personalPanels.has(target)) {
+        personalDrawer = personalDrawer === target ? "" : target;
+        render();
+      } else {
+        const leavingShop = drawer === "shop";
+        personalDrawer = "";
+        activeFacility = "";
+        drawer = target === drawer ? "" : target;
+        if (leavingShop) act("leaveShop");
+        else render();
+      }
+    }
+    if (b.dataset.combat) {
+      combatMenu = b.dataset.combat;
+      render();
+    }
+    if (b.id === "dismissPersonal") {
+      personalDrawer = "";
+      render();
+    }
+    if (b.id === "dismiss") {
+      if (drawer === "shop") {
+        drawer = "local";
+        activeFacility = "";
+        act("leaveShop");
+        return;
+      }
+      drawer = drawer === "facility" ? "local" : "";
+      activeFacility = "";
+      render();
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (personalDrawer) {
+      personalDrawer = "";
+      render();
+    } else if (drawer) {
+      if (drawer === "shop") {
+        drawer = "local";
+        activeFacility = "";
+        act("leaveShop");
+        return;
+      }
+      drawer = drawer === "facility" ? "local" : "";
+      activeFacility = "";
+      render();
+    }
+  });
+}
+function sprite(m, back = false) {
+  return (
+    '<img class="fighter" alt="' +
+    esc(m.name) +
+    '" src="https://play.pokemonshowdown.com/sprites/' +
+    (back ? "ani-back" : "ani") + (m.shiny ? "-shiny" : "") +
+    "/" +
+    encodeURIComponent(m.spriteId || m.slug) +
+    '.gif" onerror="if(!this.dataset.failed){this.dataset.failed=1;this.src=\'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/' +
+    (m.shiny ? "shiny/" : "") + Number(m.pokemonId) +
+    ".png'}else{this.hidden=true}\">"
+  );
+}
+const moveTypes = {
+  Normal: "Normal", Fire: "Fogo", Water: "Água", Electric: "Elétrico",
+  Grass: "Planta", Ice: "Gelo", Fighting: "Lutador", Poison: "Veneno",
+  Ground: "Terra", Flying: "Voador", Psychic: "Psíquico", Bug: "Inseto",
+  Rock: "Pedra", Ghost: "Fantasma", Dragon: "Dragão", Dark: "Sombrio",
+  Steel: "Aço", Fairy: "Fada",
+};
+
+const moveCategories = { Physical: "Físico", Special: "Especial", Status: "Status" };
+
+function updateMoveTooltip(event) {
+  const move = event.target.closest(".battle-move");
+  const tooltip = $("battleMoveTooltip");
+  if (!move || !tooltip || move.contains(event.relatedTarget)) return;
+  const leaving = event.type === "pointerout" || event.type === "focusout";
+  const active = leaving
+    ? $("arena").querySelector(event.type === "pointerout" ? ".battle-move:focus-visible" : ".battle-move:hover")
+    : move;
+  tooltip.hidden = !active;
+  if (active) tooltip.textContent = active.dataset.moveDetails;
+}
+
+const battleStats = {
+  atk:["ATQ","Ataque"], def:["DEF","Defesa"], spa:["ATQ ESP","Ataque Especial"],
+  spd:["DEF ESP","Defesa Especial"], spe:["VEL","Velocidade"],
+  accuracy:["PREC","Precisão"], evasion:["EVA","Evasão"],
+};
+
+function battleEffectChips(effects = [], kind = "effect") {
+  return effects.map(({id, label, layers}) => '<span class="battle-chip ' + kind +
+    (id === "confusion" ? " confused" : "") + '">' +
+    esc(label) + (layers ? " ×" + layers : "") + '</span>').join("");
+}
+
+function battleBoostChips(boosts = {}) {
+  return Object.entries(boosts).map(([id, stage]) => {
+    const [short, name] = battleStats[id] || [id, id];
+    const value = (stage > 0 ? "+" : "") + stage;
+    return '<span class="battle-chip ' + (stage > 0 ? "buff" : "debuff") +
+      '" title="' + esc(name + " " + value) + '">' + esc(short + " " + value) + '</span>';
+  }).join("");
+}
+
+function arenaView(b, e) {
+  const foe = b?.foe || e.wild,
+    own = b?.own,
+    p = state.you;
+  const teamBattle = b && b.mode !== "singles";
+  const ownActive = teamBattle ? b.ownActive : [own].filter(Boolean);
+  const foeActive = teamBattle ? b.foeActive : [foe].filter(Boolean);
+  const active = [...ownActive, ...foeActive];
+  const changed = (m) => oldBattle?.[m.uid] > m.hp;
+  const hit = active
+    .filter(Boolean)
+    .filter(changed)
+    .map((m) => m.uid);
+  if (hit.length) tone(true);
+  if (!oldBattle) combatMenu = b ? "move" : "items";
+  const glitter = new Set(active.filter(m => m?.shiny && !Object.hasOwn(oldBattle || {}, m.uid))
+    .map(m => m.uid));
+  oldBattle = Object.fromEntries(
+    active.map((m) => [m.uid, m.hp]),
+  );
+  const unit = (m, side, index) =>
+    m
+      ? '<div class="unit ' +
+        side + (teamBattle ? " group-slot-" + index : "") +
+        (hit.includes(m.uid) ? " impact" : "") +
+        '">' +
+        sprite(m, side === "own") +
+        (glitter.has(m.uid) ? '<span class="shiny-sparkles" aria-hidden="true"><i>✦</i><i>✧</i><i>✦</i><i>✧</i><i>✦</i></span>' : '') +
+        "</div>"
+      : "";
+  const vitals = (m, side, index) => {
+    if (!m) return "";
+    const status = statusName(m);
+    const types = (m.types || []).map(type => moveTypes[type] || type).join(" · ");
+    const effects = battleEffectChips(m.effects) + battleBoostChips(m.boosts) +
+      battleEffectChips(b?.field?.[side], "side");
+    return '<div class="vitals ' + side + '-hud' + (teamBattle ? ' group-slot-' + index : '') +
+      '" data-battle-hp="' + esc(m.uid) + '"><div class="vitals-heading"><strong>' +
+      esc(m.name) + '</strong><span>Nv. ' + m.level + '</span></div>' +
+      (m.shiny ? '<span class="shiny-badge">✦ Shiny</span>' : '') +
+      (status ? '<span class="combatStatus">' + esc(status) + '</span>' : '') +
+      bars(m) + (types ? '<div class="battle-types">' + esc(types) + '</div>' : '') +
+      (effects ? '<div class="battle-chips">' + effects + '</div>' : '') + '</div>';
+  };
+  const choices = b?.choices || [];
+  if (choices.length && choices.every((c) => c.kind === "switch"))
+    combatMenu = "switch";
+  const list =
+    combatMenu === "items"
+      ? (e && b && p.items.potion
+          ? btn("Poção ×" + p.items.potion, "battlePotion")
+          : "") +
+        (e?.type === "wild"
+          ? Object.entries(p.items)
+              .filter(([k, n]) => k.endsWith("-ball") && n > 0)
+              .map(([k, n]) =>
+                btn(state.shop[k].name + " ×" + n, "catch", { ball: k }, "", k),
+              )
+              .join("")
+          : "")
+      : choices
+          .filter((c) => c.kind === combatMenu)
+          .map((c) => {
+            if (c.kind !== "move") return btn(c.label, "fight", { cmd: c.command });
+            const type = moveTypes[c.type] || c.type || "—";
+            const category = moveCategories[c.category] || "—";
+            const accuracy = c.accuracy === true ? "Não falha" :
+              c.accuracy != null ? c.accuracy + "%" : "—";
+            const details = type + " · " + category + " | Poder " + (c.basePower || "—") +
+              " | Precisão " + accuracy + (c.priority ? " | Prioridade " + c.priority : "");
+            return '<button class="battle-move" data-action="fight" data-args="' +
+              esc(JSON.stringify({ cmd: c.command })) + '" data-type="' + esc(c.type || "") +
+              '" data-move-details="' + esc(details) + '" aria-description="' + esc(details) + '">' +
+              '<strong>' + esc(c.label) + '</strong>' +
+              (c.pp != null ? '<span>' + c.pp + '/' + c.maxpp + ' PP</span>' : '') +
+              '</button>';
+          })
+          .join("");
+  const tab = (id, name) =>
+    '<button data-combat="' +
+    id +
+    '" aria-pressed="' +
+    (combatMenu === id) +
+    '">' +
+    name +
+    "</button>";
+  const field = b?.field;
+  const fieldChips = [
+    ...[field?.weather, field?.terrain].filter(Boolean).map(label => ({label})),
+    ...(field?.effects || []),
+  ];
+  const history = b?.log || [];
+  const logOpen = $("battleLog")?.open;
+  const groupControls = b?.groups?.length
+    ? '<div class="group-battle-actions">' + b.groups.map((group, index) =>
+      '<label>' + esc(group.name) + select("duel-" + b.turn + "-" + index,
+        (group.options.length === 1 ? "" : opt("", "Escolher ação")) +
+        group.options.map(choice => opt(choice.command, choice.label)).join("")
+      ) + '</label>').join("") + btn("Confirmar ações", "groupFight", {}, "primary") + '</div>'
+    : '<p>Aguardando os outros treinadores…</p>';
+  return (
+    '<div class="arenaTitle">' +
+    esc(
+      e?.type === "wild"
+        ? "Encontro selvagem"
+        : e?.type === "gym"
+          ? "Ginásio"
+          : e
+            ? "Elite Four"
+            : "Duelo · " + state.duel.opponent,
+    ) +
+    '</div><div class="field' + (teamBattle ? " group-field" : "") + '">' +
+    (fieldChips.length ? '<div class="battle-field-effects" aria-label="Efeitos de campo">' +
+      battleEffectChips(fieldChips) + '</div>' : '') +
+    foeActive.map((m,i) => unit(m,"foe",i) + vitals(m,"foe",i)).join("") +
+    ownActive.map((m,i) => unit(m,"own",i) + vitals(m,"own",i)).join("") +
+    '</div><div class="console"><div class="battle-report"><p class="message" role="status">' +
+    esc(b?.log.at(-1) || (foe ? "Um " + foe.name + " apareceu!" : "Duelo")) +
+    '</p>' + (history.length ? '<details id="battleLog"' + (logOpen ? ' open' : '') +
+      '><summary>Histórico</summary><ol>' + history.map(line => '<li>' + esc(line) + '</li>').join("") +
+      '</ol></details>' : '') + '</div><div class="battle-controls"><div class="battleTabs">' +
+    (teamBattle ? '</div><div class="moves">' + groupControls :
+      (b ? tab("move", "Golpes") + tab("switch", "Trocar") : "") +
+      (e ? tab("items", "Itens") : "") +
+      (e?.type === "wild" ? btn("Fugir", "flee") : "") +
+      '</div><div class="moves">' +
+      (b?.waiting ? '<p>Aguardando o adversário…</p>' : list || '<p>Nenhuma opção disponível.</p>')) +
+    '</div></div></div><div id="battleMoveTooltip" class="battle-move-tooltip" role="tooltip" hidden></div>'
+  );
+}
+const minigameNames = {
+  market: "Pedido do mercado", auction: "Leilão", race: "Corrida de sobrevivência",
+  darkAuction: "Leilão no Escuro",
+  million: "Show do Milhão - 999.000",
+  pokemonQuiz: "Quem é esse Pokémon?",
+  wires: "Cortes do Xurkitree", guess: "Adivinha",
+};
+const miniInstructions = {
+  market: "Calcule o total da compra e envie sua resposta. Um acerto rende ₽ 180.",
+  auction: "Há um lote por treinador. Dê um lance ou passe neste lote. Ao comprar um Pokémon, você sai da disputa. Sem lances, o jogo sorteia o lote entre quem ainda não comprou, por até ₽ 1.",
+  darkAuction: "Há um lote por treinador. Você vê só a silhueta até a venda. Ao comprar um Pokémon, você sai da disputa. Sem lances, o jogo sorteia o lote entre quem ainda não comprou, por até ₽ 1.",
+  race: "Aperte quando o obstáculo chegar à marca. Os obstáculos ficam mais próximos e exigem mais precisão. Um choque elimina você. Se mais de um jogador chegar ao fim, eles empatam.",
+  million: "Responda a cinco perguntas em 45 segundos. Mais acertos valem o primeiro lugar. Em caso de empate, quem terminar mais rápido fica na frente. Os três primeiros dividem ₽ 1.000.",
+  pokemonQuiz: "Identifique cinco Pokémon pelas silhuetas em 45 segundos. Quem acertar mais vence. Em caso de empate, quem terminar mais rápido fica na frente. Até três jogadores dividem ₽ 1.000.",
+  wires: "Em dupla, cortem quatro fios na ordem indicada em até 60 segundos. Uma pessoa lê e envia as instruções. A outra vê e corta os fios. Um corte errado, fora da janela ou o fim do tempo provoca um choque.",
+  guess: "Uma pessoa pega os papéis e repassa as pistas. A outra tenta identificar o Pokémon digitando o nome. Vocês têm 60 segundos e podem tentar quantas vezes quiserem. A primeira dupla a acertar ganha.",
+};
+let raceFrame = 0;
+const raceExitDelay = 900;
+const raceResultReady = race => race.winners &&
+  Date.now() + serverOffset >= (race.endedAt || 0) + raceExitDelay;
+
+function raceDistance(elapsed) {
+  const time = Math.max(0, elapsed);
+  const rampDuration = 45000;
+  const accelerating = Math.min(time, rampDuration);
+  return time + .75 * (accelerating ** 2 / (2 * rampDuration) + time - accelerating);
+}
+
+function visibleRaceObstacles(race, elapsed, width) {
+  if (elapsed < 0) return [];
+  const travel = raceDistance(elapsed);
+  const finishTravel = race.endedAt ? raceDistance(race.endedAt - race.startsAt) : travel;
+  const edge = 40 / width * 100;
+  const right = 100 + edge;
+  return race.obstacles.flatMap((obstacle, index) => {
+    const crossing = raceDistance(obstacle.at);
+    const left = 24 + (crossing - travel) * .052;
+    const finishLeft = 24 + (crossing - finishTravel) * .052;
+    return left >= -edge && left <= right && finishLeft <= right
+      ? [{ ...obstacle, index, left }]
+      : [];
+  });
+}
+
+function renderRaceObstacles(layer, obstacles) {
+  const existing = new Map(Array.from(layer.children, node => [Number(node.dataset.index), node]));
+  for (const obstacle of obstacles) {
+    let node = existing.get(obstacle.index);
+    if (node) {
+      existing.delete(obstacle.index);
+    } else {
+      node = document.createElement("span");
+      node.className = "race-obstacle";
+      node.dataset.index = obstacle.index;
+      node.dataset.type = obstacle.type;
+      layer.append(node);
+    }
+    node.style.left = obstacle.left + "%";
+  }
+  for (const node of existing.values()) node.remove();
+}
+
+function renderRace(s) {
+  const race = s.race;
+  const p = s.you;
+  if (raceResultReady(race)) {
+    const names = s.players.filter(q => race.winners.includes(q.id)).map(q => esc(q.name));
+    return '<div class="mini-result"><strong>' +
+      (names.length === 1 ? names[0] + ' venceu!' : 'Empate · ' + names.join(', ')) +
+      '</strong><p>' + (p.done ? 'Aguardando o grupo…' :
+        btn("Continuar", "raceContinue", {}, "primary")) + '</p></div>';
+  }
+  return '<div id="raceTrack" class="race-track"><div class="race-landscape" aria-hidden="true">' +
+      '<i></i><i></i><i></i></div><div id="raceCountdown" aria-live="polite"></div>' +
+    s.players.map(q => '<div class="race-lane' + (race.runners[q.id].alive ? '' : ' eliminated') +
+      '" data-runner="' + esc(q.id) + '"><span class="runner-name">' + esc(q.name) + '</span>' +
+      '<img class="race-runner" data-race-avatar="' +
+      esc(Object.hasOwn(ExpeditionWorld.avatars, q.avatar) ? q.avatar : "mar") +
+      '" src="trainers/' + esc(Object.hasOwn(ExpeditionWorld.avatars, q.avatar) ? q.avatar : "mar") +
+      '-side0.png" alt="">' +
+      '<span class="race-mark" aria-hidden="true"></span><div class="race-obstacles" aria-hidden="true"></div></div>').join("") +
+    '</div><div class="race-controls">' +
+    btn("↑ Pular", "dodge", {pose:"jump"}, "primary") +
+    btn("↓ Abaixar", "dodge", {pose:"duck"}) +
+    '<p hidden>Eliminado · acompanhe a corrida</p></div>';
+
+}
+
+function animateRace() {
+  const track = $("raceTrack"), race = state?.race;
+  if (!track || !race || state.phase !== "minigame") {
+    raceFrame = 0;
+    return;
+  }
+  const now = Date.now() + serverOffset;
+  if (raceResultReady(race)) {
+    raceFrame = 0;
+    renderMinigame(state);
+    return;
+  }
+  const elapsed = now - race.startsAt;
+  const travel = raceDistance(elapsed);
+  const width = Math.max(1, track.clientWidth);
+  const obstacles = visibleRaceObstacles(race, elapsed, width);
+  const offset = travel * .065 % (2 * width);
+  track.style.setProperty("--race-landscape", -offset + "px");
+  track.style.setProperty("--race-ground", -travel * .27 + "px");
+  track.classList.toggle("hazard-near", !race.winners &&
+    obstacles.some(obstacle => elapsed >= obstacle.at - (obstacle.earlyMs ?? 370) &&
+      elapsed < obstacle.at + (obstacle.lateMs ?? 190)));
+  const counter = $("raceCountdown");
+  const value = elapsed < 0 ? String(Math.max(1,Math.ceil(-elapsed / 1000))) :
+    elapsed < 480 ? "Já!" : "";
+  if (counter.textContent !== value) counter.textContent = value;
+  track.classList.toggle("race-ready", elapsed >= 0);
+  for (const lane of track.querySelectorAll(".race-lane")) {
+    const runner = race.runners[lane.dataset.runner];
+    const fallen = !runner.alive;
+    lane.classList.toggle("eliminated", fallen);
+    const pose = fallen ? "fall" : runner.poseUntil > now ? runner.pose : "";
+    const stamp = fallen ? runner.eliminatedAt : runner.poseAt;
+    if (lane.dataset.pose !== pose || lane.dataset.poseStamp !== String(stamp)) {
+      lane.style.setProperty("--pose-delay", -Math.max(0, now - (stamp || now)) + "ms");
+      lane.dataset.pose = pose;
+      lane.dataset.poseStamp = stamp;
+    }
+    const image = lane.querySelector(".race-runner");
+    const step = elapsed < 0 || race.winners || pose ? 0 : [0, 1, 0, 2][
+      Math.floor(travel / 95) % 4
+    ];
+    const spritePath = "trainers/" + image.dataset.raceAvatar + "-side" + step + ".png";
+    if (image.getAttribute("src") !== spritePath) image.src = spritePath;
+    renderRaceObstacles(lane.querySelector(".race-obstacles"), obstacles);
+  }
+  const controls = document.querySelector(".race-controls");
+  const eliminated = !race.runners[state.you.id].alive;
+  for (const button of controls.querySelectorAll("button")) {
+    button.hidden = eliminated;
+    button.disabled = !!race.winners || elapsed < 0;
+  }
+  controls.querySelector("p").hidden = !eliminated;
+  raceFrame = requestAnimationFrame(animateRace);
+}
+document.addEventListener("keydown", event => {
+  if (!["ArrowUp","ArrowDown"].includes(event.key) || event.repeat ||
+      state?.phase !== "minigame" || !state.race || state.race.winners ||
+      !state.race.runners[state.you.id].alive || Date.now() + serverOffset < state.race.startsAt ||
+      !$("roundDraw").hidden) return;
+  event.preventDefault();
+  act("dodge", {pose: event.key === "ArrowUp" ? "jump" : "duck"});
+});
+let drawKey = "", drawTimer;
+
+function spinRoulette(draw, options, selected, heading, onDone) {
+  const winner = options.findIndex(([id]) => id === selected);
+  if (winner < 0) { onDone(); return; }
+  const step = 360 / options.length;
+  const stop = 5 * 360 - winner * step;
+  const colors = ["#1c5c47", "#753d5a", "#285573", "#79562a", "#4f4381", "#963f35", "#536125", "#784471"];
+  const sectors = options.map((_, i) => colors[i] + " " + i * step + "deg " + (i + 1) * step + "deg");
+  const spinMs = matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 3200;
+  draw.innerHTML = '<div class="draw-card roulette-card"><h2>' + esc(heading) + '</h2>' +
+    '<div class="roulette" aria-hidden="true"><div class="roulette-pointer"></div>' +
+    '<div class="roulette-wheel' + (options.length > 6 ? ' roulette-wheel-dense' : '') +
+    '" style="--stop:' + stop + 'deg;--spin-duration:' + spinMs +
+    'ms;--wheel:conic-gradient(from ' + (-step / 2) + 'deg,' + sectors.join(",") + ')">' +
+    options.map(([, name], index) =>
+      '<div class="roulette-sector" style="--angle:' + index * step + 'deg"><span>' +
+      esc(name) + '</span></div>').join("") +
+    '</div><div class="roulette-hub"></div></div>' +
+    '<div class="roulette-result">Girando a roleta…</div></div>';
+  draw.hidden = false;
+  drawTimer = setTimeout(() => {
+    draw.querySelector(".roulette-card").classList.add("roulette-settled");
+    draw.querySelector(".roulette-result").textContent = options[winner][1];
+    drawTimer = setTimeout(onDone, 1800);
+  }, spinMs);
+}
+
+function drawRound(s) {
+  const draw = $("roundDraw");
+  const key = s.code + ":" + s.round + ":" + s.phase;
+  if (key === drawKey) return;
+  clearTimeout(drawTimer);
+  drawKey = key;
+  draw.hidden = true;
+  $("minigameScreen").inert = false;
+  $("duelTeamScreen").inert = false;
+  $("arena").inert = false;
+  $("overlay").inert = false;
+  if (s.phase === "minigame") {
+    $("minigameScreen").inert = true;
+    const options = (s.minigameOptions ?? [s.minigame]).map(id => [id, minigameNames[id]]);
+    spinRoulette(draw, options, s.minigame, "Sorteio de minigame", () => {
+      draw.hidden = true;
+      $("minigameScreen").inert = false;
+    });
+    return;
+  }
+  if (s.phase !== "duelos" || !s.pairs?.length) return;
+  $("arena").inert = true;
+  $("overlay").inert = true;
+  $("duelTeamScreen").inert = true;
+  const names = new Map(s.players.map(p => [p.id, p.name]));
+  const showPairs = () => {
+    const result = '<div class="pair-reveal">' + s.pairs.map(members => {
+      const team = side => members.filter((_, i) => i % 2 === side).map(id => esc(names.get(id))).join(" + ");
+      return '<p><b>' + team(0) + '</b><span>VS</span><b>' + team(1) + '</b></p>';
+    }).join("") + '</div>';
+    draw.innerHTML = '<div class="draw-card"><h2>Duplas da rodada</h2>' +
+      (s.duelFormat ? '<p>' + esc(s.duelFormat.selected.label) + '</p>' : '') +
+      '<div class="draw-reel" aria-hidden="true"><div>' +
+      s.players.map(p => '<span>' + esc(p.name) + '</span>').join("") +
+      '</div></div>' + result + '</div>';
+    draw.hidden = false;
+    drawTimer = setTimeout(() => {
+      draw.hidden = true;
+      $("arena").inert = false;
+      $("overlay").inert = false;
+      $("duelTeamScreen").inert = false;
+    }, 3300);
+  };
+  if (s.duelFormat?.options.length)
+    spinRoulette(draw, s.duelFormat.options.map(f => [f.id, f.label]),
+      s.duelFormat.selected.id, "Sorteio do tipo de duelo", showPairs);
+  else showPairs();
+}
+
+let millionRevealedKey;
+
+function millionScorebar(score, total) {
+  return '<span class="million-progress" aria-hidden="true"><i style="width:' +
+    score / total * 100 + '%"></i></span><span class="million-score">' + score + '/' + total + '</span>';
+}
+
+function renderPokemonSilhouette(silhouette) {
+  return '<div class="pokemon-quiz-stage" role="img" aria-label="Silhueta de um Pokémon a identificar">' +
+    '<div class="pokemon-quiz-art" aria-hidden="true" style="--angle:' + silhouette.angle +
+    'deg;--flip-x:' + silhouette.flipX + ';--flip-y:' + silhouette.flipY + '">' +
+    sprite(silhouette) + '</div>' + silhouette.spots.map(spot =>
+      '<i aria-hidden="true" style="--x:' + spot.x + '%;--y:' + spot.y + '%;--size:' + spot.size +
+      '%;--tilt:' + (spot.x * 3) + 'deg"></i>'
+    ).join("") + '</div>';
+}
+
+function renderMillion(s) {
+  const quiz = s.million;
+  if (quiz.results) {
+    if (millionRevealedKey !== quiz.deadline && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return '<div class="million-board million-reveal" id="millionReveal">' +
+        '<div class="million-check" aria-live="polite"></div><div class="million-players">' +
+        s.players.map(p => '<div class="million-player"><div class="million-character">' +
+          trainerSprite(p.avatar, "million-avatar") + '<span class="million-stamp" hidden></span></div>' +
+          '<strong>' + esc(p.name) + '</strong>' + millionScorebar(0, quiz.total) + '</div>').join("") +
+        '</div>' + btn("Pular contagem", "millionSkip") + '</div>';
+    }
+    const players = new Map(s.players.map(p => [p.id, p]));
+    return '<div class="million-board"><h3>Classificação</h3><ol class="million-ranking">' +
+      quiz.results.map(({id, score, prize}) =>
+        '<li' + (id === s.you.id ? ' class="million-you"' : '') + '>' +
+        trainerSprite(players.get(id)?.avatar, "million-avatar") + '<strong>' + esc(players.get(id)?.name) +
+        '</strong>' + millionScorebar(score, quiz.total) + ' <b>' +
+        (prize ? '₽ ' + prize : '—') + '</b></li>').join("") +
+      '</ol><details><summary>Ver gabarito</summary><ol>' + quiz.review.map(q =>
+        '<li>' + (q.silhouette ? '<span class="pokemon-quiz-answer">' +
+          sprite({...q.silhouette, name: "", shiny: false}) + '</span>' : '<strong>' + esc(q.prompt) + '</strong><br>') +
+        esc(q.correct) +
+        (q.selected === q.correct ? ' <span aria-label="Você acertou">✓</span>' :
+          ' <small>· ' + (q.selected ? 'Sua resposta: ' + esc(q.selected) : 'Sem resposta') + '</small>') +
+        '</li>').join("") + '</ol></details>' +
+      (s.you.done ? '<p>Aguardando o grupo…</p>' : btn("Continuar", "millionContinue", {}, "primary")) + '</div>';
+  }
+  return '<div class="million-board"><div class="million-status"><span>' +
+    (quiz.question ? (quiz.question.silhouette ? 'Rodada ' : 'Pergunta ') + (quiz.index + 1) + ' de ' + quiz.total : 'Respostas enviadas') +
+    '</span><span id="millionClock"></span></div>' +
+    (quiz.question ? (quiz.question.silhouette ? renderPokemonSilhouette(quiz.question.silhouette) :
+      '<h3>' + esc(quiz.question.prompt) + '</h3>') + '<div class="million-choices">' +
+      quiz.question.choices.map((choice, index) => btn(String.fromCharCode(65 + index) + " · " + choice,
+        "millionAnswer", { index: quiz.index, choice: index })).join("") + '</div>' :
+      '<p>Aguardando os demais jogadores…</p>') + '</div>';
+}
+
+function finishMillionReveal() {
+  millionRevealedKey = state.million.deadline;
+  $("millionReveal")?.remove();
+  renderMinigame(state);
+}
+
+function animateMillionReveal(reveal, s) {
+  const quiz = s.million;
+  const heading = reveal.querySelector(".million-check");
+  const outcomes = new Map(quiz.results.map(result => [result.id, result.checks]));
+  const cards = [...reveal.querySelectorAll(".million-player")].map((card, index) => ({
+    checks: outcomes.get(s.players[index].id),
+    stamp: card.querySelector(".million-stamp"),
+    bar: card.querySelector(".million-progress i"),
+    score: card.querySelector(".million-score"),
+    points: 0,
+  }));
+
+  function checkQuestion(index) {
+    if (!reveal.isConnected || state.phase !== "minigame" || state.million?.deadline !== quiz.deadline) return;
+    if (index === quiz.total) {
+      finishMillionReveal();
+      return;
+    }
+    const question = quiz.review[index];
+    heading.textContent = (question.silhouette ? "Rodada " : "Pergunta ") +
+      (index + 1) + " de " + quiz.total + " · " + question.correct;
+    for (const card of cards) {
+      const correct = card.checks[index];
+      card.points += Number(correct);
+      card.stamp.hidden = false;
+      card.stamp.dataset.correct = correct;
+      card.stamp.textContent = correct ? "Fez o básico" : "Burro";
+      card.stamp.getAnimations().forEach(animation => animation.cancel());
+      card.stamp.animate([
+        { transform: "translate(-50%, -50%) rotate(-13deg) scale(1.8)", opacity: 0 },
+        { transform: "translate(-50%, -50%) rotate(-8deg) scale(.9)", opacity: 1, offset: .65 },
+        { transform: "translate(-50%, -50%) rotate(-8deg) scale(1)", opacity: 1 },
+      ], { duration: 310, easing: "ease-out" });
+      card.bar.style.width = card.points / quiz.total * 100 + "%";
+      card.score.textContent = card.points + "/" + quiz.total;
+    }
+    setTimeout(checkQuestion, 1050, index + 1);
+  }
+
+  setTimeout(checkQuestion, 350, 0);
+}
+
+function updateMiniClock(clock, deadline) {
+  if (!clock.isConnected) return;
+  const seconds = Math.max(0, Math.ceil((deadline - Date.now() - serverOffset) / 1000));
+  clock.textContent = seconds + " s";
+  clock.classList.toggle("urgent", seconds <= 10);
+  if (seconds > 0) setTimeout(() => updateMiniClock(clock, deadline), 200);
+}
+
+const wireColors = {
+  vermelho:"#fe626e", azul:"#72a9ff", amarelo:"#ffd65f", verde:"#7ce48f",
+  roxo:"#bd95ff", laranja:"#ff9855", rosa:"#ffa2d8",
+};
+const pairLabels = { won:"Venceu", shock:"Levou choque", timeout:"Tempo esgotado", lost:"Outra dupla acertou primeiro" };
+
+function playPairFeedback(previous, current) {
+  if (!previous || !current || !current.deadline) return;
+  if (current.status !== previous.status) {
+    if (current.status === "won") playNotes([[523,659,.12], [659,784,.14], [784,1047,.23]]);
+    else if (current.status === "shock" || current.status === "timeout")
+      playNotes([[110,64,.22], [170,52,.24], [120,48,.3]]);
+  } else if ((current.progress ?? 0) > (previous.progress ?? 0)) {
+    playNotes([[780,300,.1], [520,660,.12]]);
+  } else if ((current.hints?.length ?? 0) > (previous.hints?.length ?? 0) ||
+      current.messages.length > previous.messages.length) {
+    playNotes([[620,860,.105]]);
+  } else if (current.lastGuessAt && current.lastGuessAt !== previous.lastGuessAt) {
+    playNotes([[350,160,.14]]);
+  }
+}
+
+function renderPairGame(s) {
+  const game = s.pairGame;
+  const wires = s.minigame === "wires";
+  const name = id => s.players.find(player => player.id === id)?.name;
+  const failed = game.status === "shock" || (wires && game.status === "timeout");
+  const active = game.status === "playing" && !game.finished;
+  const xurkitree = {name:"Xurkitree", slug:"xurkitree", pokemonId:796};
+  const result = game.finished ? '<ul class="pair-results">' +
+    game.results.map(team => '<li><b>' + esc(name(team.guide)) + ' &amp; ' + esc(name(team.actor)) +
+      '</b><span>' + esc(pairLabels[team.status]) + '</span></li>').join("") + '</ul>' +
+    (s.you.done ? '<p>Aguardando o grupo…</p>' : btn("Continuar", "pairContinue", {}, "primary")) :
+    '<p>Aguardando as outras duplas…</p>';
+  const status = '<div class="pair-status"><span>Dupla com <b>' + esc(name(game.partner)) +
+    '</b></span>' + (active ? '<strong id="pairClock" aria-label="Tempo restante"></strong>' : '') + '</div>';
+  if (!active) return '<div class="pair-mini' + (failed ? ' pair-shock' : '') + '">' + status +
+    (wires || game.pokemon ? '<div class="pair-pokemon">' + sprite(wires ? xurkitree : game.pokemon) + '</div>' : '') +
+    '<h3>' + esc(failed ? "Choque do Xurkitree!" : pairLabels[game.status]) + '</h3>' +
+    (game.pokemon ? '<p>Era <strong>' + esc(game.pokemon.name) + '</strong>.</p>' : '') + result + '</div>';
+
+  const messages = '<ol class="pair-messages" aria-label="' + (wires ? "Instruções recebidas" : "Pistas recebidas") + '">' +
+    game.messages.map(message => '<li>' + esc(message.text) + '</li>').join("") +
+    '</ol>';
+  let board;
+  if (wires && game.guide) {
+    board = '<ol class="wire-checklist">' + game.instructions.map((step, index) =>
+      '<li data-step="' + (index < game.progress ? "done" : index === game.progress ? "current" : "next") +
+      '">' + esc(step) + (index === game.progress && !game.messages.some(m => m.index === index)
+        ? btn("Enviar instrução", "pairRelay", {index}, "primary") : '') + '</li>').join("") + '</ol>';
+  } else if (wires) {
+    board = '<div class="wire-board">' + game.wires.map(wire => {
+      const cut = game.cuts.includes(wire.id);
+      return '<div class="wire-slot' + (cut ? ' wire-cut' : '') + '" style="--wire:' + wireColors[wire.color] +
+        ';--thickness:' + ({fino:3, médio:6, grosso:10}[wire.thickness]) + 'px">' +
+        '<button type="button" data-action="pairCut" data-args="' +
+        esc(JSON.stringify({wire:wire.id, index:game.progress})) + '" aria-label="' +
+        esc((cut ? "Cortado: " : "Cortar: ") + wire.color + " " + wire.thickness) + '"' +
+        (cut ? ' disabled' : '') + '><i></i><span>' + (wire.id + 1) + '</span></button>' +
+        '<small>' + esc(wire.color) + '<br>' + esc(wire.thickness) + '</small></div>';
+    }).join("") + '</div>' + (game.messages.length ? messages : '<p>Aguardando as instruções da sua dupla…</p>');
+  } else if (game.guide) {
+    board = (game.hints.length < game.total ? '<div class="paper-field"><i></i><i></i>' +
+      '<div class="paper-flight" style="--paper-delay:-' + (game.paper % 1600) + 'ms">' +
+      btn("Pegar papel", "pairCatch", {paper:game.paper}, "flying-paper") + '</div></div>' : '') +
+      '<ol class="wire-checklist">' + game.hints.map((hint, index) => '<li>' + esc(hint) +
+        (game.messages.some(m => m.index === index) ? ' <small>Enviada</small>' :
+          btn("Enviar pista", "pairRelay", {index}, "primary")) + '</li>').join("") + '</ol>';
+  } else {
+    board = (game.messages.length ? messages : '<p>Aguardando as pistas da sua dupla…</p>') +
+      '<form id="pairGuessForm"><label for="pairGuessName">Nome do Pokémon</label>' +
+      '<div><input id="pairGuessName" maxlength="60" autocomplete="off" required>' +
+      '<button type="submit" class="primary">Adivinhar</button></div></form>' +
+      (game.lastGuessAt ? '<p role="status">Ainda não. Pode tentar de novo!</p>' : '');
+  }
+  return '<div class="pair-mini">' + status +
+    (wires ? '<div class="pair-pokemon pair-live">' + sprite(xurkitree) + '</div>' : '') +
+    '<h3>' + (wires ? (game.guide ? "Manual de cortes" : "Painel de fios") :
+      game.guide ? "Pegue os papéis" : "Qual é o Pokémon?") + '</h3>' +
+    (wires ? '<p class="pair-progress">' + game.progress + ' de ' + game.total + ' cortes corretos</p>' : '') +
+    board + '</div>';
+}
+
+document.addEventListener("submit", event => {
+  if (event.target.id !== "pairGuessForm") return;
+  event.preventDefault();
+  const name = v("pairGuessName")?.trim();
+  if (name) act("pairGuess", {name});
+});
+
+function renderAuction(s) {
+  const a = s.auction;
+  if (!a) return '<div class="mini-result">Preparando os lotes…</div>';
+  const name = id => s.players.find(p => p.id === id)?.name;
+  const purchases = new Map(a.results.map(result => [result.winner, result]));
+  if (a.closed) {
+    return '<div class="auction-board auction-summary"><h3>Compras do leilão</h3>' +
+      a.results.map(result => '<div class="auction-purchase">' + sprite(result.pokemon) +
+        '<div><strong>' + esc(result.pokemon.name) + '</strong><br>' + esc(name(result.winner)) +
+        '</div><b>₽ ' + result.amount + '</b></div>').join("") +
+      (s.you.done ? '<p>Aguardando o grupo…</p>' : btn("Continuar", "auctionContinue", {}, "primary")) + '</div>';
+  }
+
+  const p = s.you;
+  const result = a.reveal ? a.results.at(-1) : null;
+  const lot = a.lot + (a.reveal ? 0 : 1);
+  const pokemon = a.pokemon;
+  const canBid = !a.reveal && !purchases.has(p.id) && !a.passed.includes(p.id) && a.leader !== p.id;
+  const bid = p.money > a.amount
+    ? '<label>Seu lance<input type="number" id="auctionBid" min="' + (a.amount + 1) +
+      '" max="' + p.money + '" value="' + (a.amount + 1) + '" inputmode="numeric"></label>' +
+      btn("Dar lance", "bid", {lot:a.lot}, "primary")
+    : '<p>Seu saldo não cobre o lance.</p>';
+  const controls = a.reveal ? '' : canBid ? bid + btn("Passar", "auctionPass", {lot:a.lot}) :
+    '<p>' + (purchases.has(p.id) ? "Você já comprou seu Pokémon." :
+      a.leader === p.id ? "Você está na liderança." : "Você passou neste lote.") + '</p>';
+
+  return '<div class="auction-grid"><div class="auction-lot' + (a.hidden ? ' auction-silhouette' : '') +
+    '"><span>Lote ' + lot + ' de ' + a.total + '</span>' + (pokemon ? sprite(pokemon) : '') +
+    (a.hidden ? '<strong>Pokémon misterioso</strong>' : pokemon ?
+      '<strong>' + esc(pokemon.name) + '</strong><span>Nível ' + pokemon.level +
+      (pokemon.shiny ? ' · Shiny' : '') + '</span>' : '') + '</div>' +
+    '<div class="auction-board"><div aria-live="polite" class="auction-price"><small>' +
+    (result ? "Vendido" : 'Maior lance <span id="auctionClock"></span>') + '</small><strong>' +
+    (result ? "₽ " + result.amount : a.amount ? "₽ " + a.amount : "—") + '</strong><span>' +
+    esc(result ? name(result.winner) : name(a.leader) || "Aguardando o primeiro lance") +
+    (result?.automatic ? ' · Venda automática' : '') + '</span></div>' +
+    '<div class="auction-players">' + s.players.map(q =>
+      '<div><b>' + esc(q.name) + '</b><span>' +
+      (purchases.has(q.id) ? 'Comprou ' + esc(purchases.get(q.id).pokemon.name) :
+        a.leader === q.id ? "Líder" : a.passed.includes(q.id) ? "Passou" : "Na disputa") +
+      '</span></div>').join("") + '</div><div class="auction-actions"><strong>Saldo · ₽ ' + p.money +
+    '</strong>' + controls + '</div></div></div>';
+}
+
+function renderMinigame(s) {
+  const p = s.you;
+  const screen = $("minigameScreen");
+  screen.hidden = s.phase !== "minigame";
+  if (screen.hidden) return;
+  if (s.million?.results && $("millionReveal") && millionRevealedKey !== s.million.deadline) return;
+  screen.dataset.game = s.minigame;
+  if (s.minigame === "race" && s.race && !raceResultReady(s.race) && $("raceTrack")) return;
+  const title = minigameNames[s.minigame];
+  let content;
+  if (s.miniReady && s.miniReady.length < s.players.length) {
+    content = '<div class="mini-tutorial"><p>' + esc(miniInstructions[s.minigame]) +
+      '</p>' + (s.minigame === "race"
+        ? '<div class="race-keys"><div><kbd>↑</kbd><b>Pular</b><span>Tronco no chão</span></div>' +
+          '<div><kbd>↓</kbd><b>Abaixar</b><span>Barreira suspensa</span></div></div>' +
+          '<p class="race-touch-hint">No celular, toque em Pular ou Abaixar.</p>'
+        : '') + '<div class="auction-players">' + s.players.map(q =>
+      '<div><b>' + esc(q.name) + '</b><span>' +
+      (s.miniReady.includes(q.id) ? "Pronto" : "Lendo") + '</span></div>').join("") +
+      '</div>' + (s.miniReady.includes(p.id) ? '<p>Aguardando o grupo…</p>' :
+      btn("Pronto", "miniReady", {}, "primary")) + '</div>';
+  } else if (s.minigame === "race") {
+    content = renderRace(s);
+  } else if (s.million) {
+    content = renderMillion(s);
+  } else if (s.pairGame) {
+    content = renderPairGame(s);
+  } else if (s.minigame === "market") {
+    content = p.done
+      ? '<div class="mini-result"><strong>' + esc(p.notice) + '</strong><p>Aguardando o grupo…</p></div>'
+      : '<div class="market-ticket"><div class="market-question"><strong>' +
+        s.quiz.a + ' × ' + s.quiz.b + '</strong><p>Qual é o total da compra?</p></div>' +
+        '<label>Total em ₽<input id="answer" type="number" min="0" inputmode="numeric"></label>' +
+        btn("Responder", "answer", {}, "primary") + '</div>';
+  } else content = renderAuction(s);
+  screen.innerHTML = '<div class="mini-shell"><div class="mini-heading"><span>Rodada ' + s.round +
+    '</span><h2>' + esc(title) + '</h2></div>' + content + '</div>';
+  const clock = $("millionClock");
+  if (clock) updateMiniClock(clock, s.million.deadline);
+  const auctionClock = $("auctionClock");
+  if (auctionClock) updateMiniClock(auctionClock, s.auction.deadline);
+  const pairClock = $("pairClock");
+  if (pairClock) updateMiniClock(pairClock, s.pairGame.deadline);
+  const reveal = $("millionReveal");
+  if (reveal) animateMillionReveal(reveal, s);
+  if ($("raceTrack") && !raceFrame) raceFrame = requestAnimationFrame(animateRace);
+}
+
+let duelDraftKey = "";
+let duelPicks = [];
+
+function renderDuelTeam(s) {
+  const screen = $("duelTeamScreen");
+  const selection = s.phase === "duelos" && s.duel?.selection;
+  screen.hidden = !selection;
+  if (!selection) return;
+  const key = s.code + ":" + s.round;
+  if (duelDraftKey !== key) {
+    duelDraftKey = key;
+    duelPicks = [];
+  }
+  if (selection.picked) duelPicks = [...selection.picked];
+  const focus = screen.contains(document.activeElement) ? document.activeElement.dataset.focus : "";
+  const locked = Boolean(selection.picked);
+  const party = s.you.party;
+  const byUid = new Map(party.map(mon => [mon.uid, mon]));
+  const slots = Array.from({length:selection.size}, (_, index) => {
+    const mon = byUid.get(duelPicks[index]);
+    const lead = index < selection.leads;
+    return '<li class="duel-slot' + (lead ? ' opening' : '') + '"><span class="duel-slot-index">' +
+      (index + 1) + '</span>' + (mon ? tokenMon(mon) : '<span class="duel-slot-empty"></span>') +
+      '<div><b>' + esc(mon?.name || "Espaço vazio") + '</b><small>' +
+      (lead ? "Entra em campo" : "Reserva") + '</small></div>' +
+      (!locked && mon && index ? '<button type="button" data-duel-promote="' + esc(mon.uid) +
+        '" data-focus="order-' + esc(mon.uid) + '" aria-label="Subir ' + esc(mon.name) + '">↑</button>' : '') +
+      '</li>';
+  }).join("");
+  const roster = party.map(mon => {
+    const order = duelPicks.indexOf(mon.uid);
+    return '<button type="button" class="duel-candidate" data-duel-pick="' + esc(mon.uid) +
+      '" data-focus="pick-' + esc(mon.uid) + '" aria-pressed="' + (order >= 0) + '"' +
+      (locked ? " disabled" : "") + '>' + tokenMon(mon) + '<span><b>' + esc(mon.name) +
+      '</b><small>Nv. ' + mon.level + '</small></span>' +
+      '<span class="duel-choice-order" aria-hidden="true">' + (order >= 0 ? order + 1 : "+") +
+      '</span></button>';
+  }).join("");
+  const trainers = selection.trainers.map(trainer => {
+    const player = s.players.find(p => p.id === trainer.id);
+    const relation = trainer.id === s.you.id ? "Você" : trainer.ally ? "Aliado" : "Rival";
+    return '<li>' + trainerSprite(player.avatar, "duel-trainer-icon") + '<span><b>' + esc(player.name) +
+      '</b><small>' + relation + '</small></span><small class="' + (trainer.ready ? 'ready' : '') +
+      '">' + (trainer.ready ? "Pronto" : "Escolhendo") + '</small></li>';
+  }).join("");
+  const ready = duelPicks.length === selection.size;
+  screen.innerHTML = '<div class="duel-team-shell"><header class="duel-team-heading">' +
+    '<div><small>' + esc(s.duelFormat.selected.label) + '</small><h2>Escalar equipe</h2></div>' +
+    '<strong aria-live="polite">' + duelPicks.length + ' / ' + selection.size + '</strong></header>' +
+    '<div class="duel-team-layout"><section><h3>Sua equipe</h3><div class="duel-roster">' + roster +
+    '</div></section><section><h3>Ordem de entrada</h3><ol class="duel-slots">' + slots +
+    '</ol></section><section class="duel-participants"><h3>Treinadores</h3><ul>' + trainers +
+    '</ul></section></div><footer class="duel-team-footer"><p role="status">' +
+    (locked ? "Esperando os outros treinadores." : "Selecione quem vai lutar. Use ↑ para ajustar a ordem.") +
+    '</p>' + (locked ? btn("Editar equipe", "duelEdit") :
+      '<button type="button" class="primary" data-action="duelTeam"' +
+      (ready ? '' : ' disabled') + '>Confirmar equipe</button>') + '</footer></div>';
+  if (focus) screen.querySelector('[data-focus="' + CSS.escape(focus) + '"]')?.focus({preventScroll:true});
+}
+
+$("duelTeamScreen").addEventListener("click", event => {
+  const button = event.target.closest("[data-duel-pick], [data-duel-promote]");
+  const selection = state?.duel?.selection;
+  if (!button || !selection || selection.picked || busy) return;
+  if (button.dataset.duelPromote) {
+    const index = duelPicks.indexOf(button.dataset.duelPromote);
+    if (index > 0) [duelPicks[index - 1], duelPicks[index]] = [duelPicks[index], duelPicks[index - 1]];
+  } else {
+    const uid = button.dataset.duelPick;
+    if (duelPicks.includes(uid)) duelPicks = duelPicks.filter(id => id !== uid);
+    else if (duelPicks.length < selection.size) duelPicks.push(uid);
+    else {
+      toast("Retire um Pokémon da escalação para trocar.");
+      return;
+    }
+  }
+  renderDuelTeam(state);
+});
+
+const worldPeriods = { day: ["☀", "Dia"], dusk: ["◒", "Tarde"], night: ["☾", "Noite"] };
+const worldLighting = [
+  [.03,.56], [.04,.52], [.06,.46], [.10,.38],
+  [.22,.14], [.18,.05], [.08,0], [.045,0], [.025,0], [.012,0], [0,0],
+];
+function setWorldLight(element, actions) {
+  const [warm, night] = worldLighting[Math.max(0, Math.min(10, actions))] || worldLighting[10];
+  element.style.setProperty("--world-warm", warm);
+  element.style.setProperty("--world-night", night);
+}
+
+function renderWorld() {
+  const s = state,
+    p = s.you;
+  const period = p.period || ExpeditionWorld.actionPeriod(p.actions);
+  const [periodIcon, periodLabel] = worldPeriods[period];
+  setWorldLight($("game"), p.actions);
+  document.body.classList.add("playing");
+  document.body.classList.toggle("reading-cards", s.phase === "cards");
+  const phaseChanged = s.phase !== previousPhase;
+  if (phaseChanged) {
+    drawer = s.phase === "actions" ? "" : "phase";
+    if (s.phase === "actions" && p.eliteRun != null && !p.enc) {
+      drawer = "facility";
+      activeFacility = "gym";
+    }
+    personalDrawer = "";
+    shopCart.clear();
+  }
+  if (s.phase === "actions" && p.done && (phaseChanged || !previouslyDone)) {
+    drawer = "phase";
+    personalDrawer = "";
+    activeFacility = "";
+  }
+  previousPhase = s.phase;
+  previouslyDone = p.done;
+  if (p.notice !== lastNotice) {
+    lastNotice = p.notice;
+    if (p.notice && !p.notice.startsWith("Trabalho concluído.")) toast(p.notice);
+  }
+  $("gameHead").innerHTML =
+    '<div class="turn"><small>RODADA</small><b>' +
+    s.round +
+    "<sub> / " +
+    s.rounds +
+    '</sub></b></div><div class="turnName"><small>' +
+    esc(p.name) +
+    "</small><b>" +
+    phases[s.phase] +
+    "</b><span>" +
+    p.actions +
+    ' ações · <span class="world-period"><i aria-hidden="true">' + periodIcon + "</i> " + periodLabel + "</span> · " +
+    p.badges.length +
+    " insígnias</span></div>";
+  if (!mapMounted) {
+    WorldMap.mount($("map"), (id) => {
+      if (id === leagueIsland) {
+        const { phase, you } = state;
+        if (you.loc !== leagueIsland &&
+            (!leaguePorts.includes(you.loc) || phase !== "actions" || you.done || you.enc || !you.actions)) return;
+        drawer = "league";
+        activeFacility = "";
+        render();
+        $("dismiss").focus();
+      } else if (state.phase === "actions" && !state.you.done && !state.you.enc) {
+        activeFacility = "";
+        if (id === state.you.loc) {
+          drawer = "local";
+          render();
+        } else {
+          drawer = "";
+          render();
+          act("move", { loc: id });
+        }
+      }
+    });
+    mapMounted = true;
+  }
+  WorldMap.update(p.loc, s.players,
+    s.phase === "actions" && !p.done && !p.enc && p.eliteRun == null && p.actions > 0, s.gyms);
+  const canReorder = ["actions", "resumo"].includes(s.phase) && !p.enc && !p.moveLesson;
+  $("partyRail").innerHTML =
+    "<small>EQUIPE</small>" +
+    Array.from({ length: 6 }, (_, i) => {
+      const m = p.party[i];
+      const slot = ' data-slot="' + i + '" data-team="party"';
+      if (!m) return '<span class="rail-empty"' + slot + ' aria-hidden="true"></span>';
+      const drag = canReorder ? ' draggable="true" data-mon="' + esc(m.uid) + '"' : "";
+      return '<button type="button"' + slot + drag + ' data-drawer="team" aria-label="' +
+        esc(m.name) + '">' + tokenMon(m) +
+        '<progress aria-label="HP" value="' + m.hp + '" max="' + m.maxhp + '"></progress>' +
+        "</button>";
+    }).join("");
+  $("partyRail").hidden = false;
+  $("dock").innerHTML =
+    menuBtn(
+      s.phase === "actions" && !p.done ? "local" : "phase",
+      s.phase === "actions" && !p.done ? locName(p.loc) : phases[s.phase],
+      s.phase === "actions" ? "map-pin" : "flag",
+    ) +
+    menuBtn("box", "Box", "archive") +
+    menuBtn("bag", "Mochila", "backpack") +
+    menuBtn("profile", "Perfil", "contact-round");
+  renderMinigame(s);
+  renderDuelTeam(s);
+  drawRound(s);
+  if (s.duel?.selection) {
+    $("overlay").hidden = true;
+    $("arena").hidden = true;
+    $("personalOverlay").hidden = true;
+    document.body.classList.remove("fighting");
+    return;
+  }
+  if (practiceMode && s.phase === "final") {
+    const screen = $("minigameScreen");
+    screen.hidden = false;
+    screen.innerHTML = '<div class="mini-result"><h2>Treino concluído</h2>' +
+      (p.notice ? '<p>' + esc(p.notice) + '</p>' : '') +
+      '<p>Escolha um minigame no menu para jogar de novo.</p></div>';
+    return;
+  }
+  if (s.phase === "final") {
+    $("overlay").hidden = true;
+    $("arena").hidden = true;
+    renderPersonalPanel();
+    $("map").inert = true;
+    renderFinalScoreboard(s);
+    return;
+  }
+  if (s.phase === "minigame") {
+    $("arena").hidden = true;
+    $("overlay").hidden = true;
+    return;
+  }
+  if (s.phase === "cards") {
+    renderPersonalPanel();
+    $("overlay").hidden = true;
+    $("arena").hidden = true;
+    return;
+  }
+  const e = p.enc,
+    b = e?.battle || (!s.duel?.result ? s.duel?.battle : null);
+  $("arena").hidden = !(e || b);
+  document.body.classList.toggle("fighting", !!(e || b));
+  if (e || b) {
+    const previous = oldBattle;
+    setWorldLight($("arena"), e?.startedActions ?? (e ? p.actions : 10));
+    $("arena").innerHTML = arenaView(b, e);
+    const active = [...(b?.ownActive || [b?.own]), ...(b?.foeActive || [b?.foe || e?.wild])];
+    for (const m of active) {
+      if (!m || previous?.[m.uid] == null) continue;
+      const hud = $("arena").querySelector('[data-battle-hp="' + CSS.escape(m.uid) + '"]');
+      animateHP(hud?.querySelector("progress"), previous[m.uid], m.hp);
+    }
+
+    $("overlay").hidden = true;
+    drawer = "";
+    personalDrawer = "";
+    renderPersonalPanel();
+    return;
+  }
+  if (oldBattle && s.phase === "duelos") drawer = "phase";
+  oldBattle = null;
+  if (p.shopVisit && s.phase === "actions") drawer = "shop";
+  $("overlay").classList.toggle(
+    "widePhase",
+    drawer === "phase" && ["resumo", "trocas"].includes(s.phase),
+  );
+  renderPersonalPanel();
+  $("overlay").classList.toggle("visit", ["local", "league"].includes(drawer));
+  $("overlay").classList.toggle("facility-full", ["shop", "facility"].includes(drawer));
+  $("overlay").hidden = !drawer;
+  if (!drawer) return;
+  if (drawer === "phase" || drawer === "local")
+    $("content").innerHTML = drawer === "local" ? locationScene() : controls();
+  else if (drawer === "league") $("content").innerHTML = leagueScene();
+  else if (drawer === "shop") {
+    const pos = $("shopCatalog")?.scrollTop || 0;
+    $("content").innerHTML = shopScreen();
+    updateCatalog();
+    $("shopCatalog").scrollTop = pos;
+  }
+  else if (drawer === "facility") {
+    const scroll = $("postJobs")?.scrollLeft || 0;
+    const selectedPokemon = v("labPokemon");
+    $("content").innerHTML = facilityScreen();
+    if ($("labPokemon")) {
+      if ([...$("labPokemon").options].some(option => option.value === selectedPokemon))
+        $("labPokemon").value = selectedPokemon;
+      updateLabEditor();
+    }
+    const jobs = $("postJobs");
+    if (jobs) {
+      jobs.scrollLeft = scroll;
+      jobs.addEventListener("scroll", updatePostScroll);
+      updatePostScroll();
+    }
+  }
+}
+
+function renderPersonalPanel() {
+  const open = Boolean(personalDrawer);
+  const overlay = $("personalOverlay"), content = $("personalContent");
+  overlay.hidden = !open;
+  overlay.classList.toggle("pc", personalDrawer === "box");
+  $("overlay").inert = open;
+  $("map").inert = open;
+  if (!open) {
+    content.replaceChildren();
+  } else if (personalDrawer === "profile") {
+    content.innerHTML = profile();
+  } else if (personalDrawer === "box") {
+    content.innerHTML = boxScreen();
+  } else {
+    const tmp = document.createElement("div");
+    tmp.innerHTML = inventory();
+    content.replaceChildren(tmp.children[personalDrawer === "team" ? 0 : 2]);
+  }
+}
+
+initializeScreen();
+poll();
+function pollNext() {
+  poll().finally(() => setTimeout(pollNext, state?.minigame === "race" ? 85 : state?.pairGame ? 350 : 1100));
+}
+setTimeout(pollNext, 1100);
+
+function cinematic(kind, text, ms) {
+  const el = document.createElement("div");
+  el.className = "cinematic " + kind;
+  el.innerHTML = "<strong>" + esc(text) + "</strong>";
+  document.body.append(el);
+  return new Promise((resolve) =>
+    setTimeout(() => {
+      el.remove();
+      resolve();
+    }, ms),
+  );
+}
+const captureSounds = {
+  throw: [[270, 820, .24]],
+  draw: [[880, 1480, .1], [1150, 330, .22]],
+  land: [[160, 62, .11]],
+  shake: [[420, 240, .12]],
+  escape: [[230, 1250, .24], [530, 800, .13]],
+  caught: [[523, 523, .14], [659, 659, .14], [784, 784, .14], [1047, 1047, .28]],
+};
+
+function playCaptureSound(effect) {
+  playNotes(captureSounds[effect]);
+}
+
+function playNotes(notes) {
+  if (muted || audio?.state !== "running") return;
+  notes.forEach(([from, to, duration], index) => {
+    const start = audio.currentTime + index * .085;
+    const oscillator = audio.createOscillator();
+    const gain = audio.createGain();
+    oscillator.type = "triangle";
+    oscillator.frequency.setValueAtTime(from, start);
+    oscillator.frequency.exponentialRampToValueAtTime(to, start + duration);
+    gain.gain.setValueAtTime(.0001, start);
+    gain.gain.exponentialRampToValueAtTime(.075, start + .015);
+    gain.gain.exponentialRampToValueAtTime(.0001, start + duration);
+    oscillator.connect(gain).connect(audio.destination);
+    oscillator.start(start);
+    oscillator.stop(start + duration);
+  });
+}
+
+async function animateCapture(item, caught) {
+  const foe = $("arena").querySelector(".foe .fighter");
+  const unit = $("arena").querySelector(".foe");
+  const target = unit?.getBoundingClientRect();
+  const x = target ? target.left + target.width / 2 : innerWidth * .69;
+  const y = target ? target.top + target.height / 2 : innerHeight * .35;
+  const drop = target ? target.height * .54 : 45;
+  const fromX = innerWidth * .20 - x;
+  const fromY = innerHeight * .68 - y;
+  const stage = document.createElement("div");
+  const art = '<img src="items/' + encodeURIComponent(item) + '.png" alt="">';
+  stage.className = "capture-stage";
+  stage.style.setProperty("--capture-x", x + "px");
+  stage.style.setProperty("--capture-y", y + "px");
+  stage.innerHTML = '<div class="capture-ball"><span>' + art + '</span><span>' +
+    art + '</span></div><div class="capture-flash"></div>' +
+    '<div class="capture-stars" aria-hidden="true">✦ <b>✧</b> ✦</div>' +
+    '<strong class="capture-result" role="status" hidden></strong>';
+  document.body.append(stage);
+
+  const ball = stage.querySelector(".capture-ball");
+  const flash = stage.querySelector(".capture-flash");
+  const stars = stage.querySelector(".capture-stars");
+  const result = stage.querySelector(".capture-result");
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  const animate = (element, frames, duration, options = {}) =>
+    element.animate(frames, { duration, fill: "forwards", ...options });
+  const move = (x, y, rotation = 0) =>
+    `translate(${x}px, ${y}px) rotate(${rotation}deg)`;
+  const absorbed = { opacity: 0, transform: "scale(.04)", filter: "brightness(3) sepia(1) saturate(5)" };
+  const visible = { opacity: 1, transform: "scale(1)" };
+  const pulse = () => animate(flash, [
+    { opacity: 0, scale: .25 }, { opacity: .95, scale: 1 }, { opacity: 0, scale: 1.45 },
+  ], 320);
+  let pull, release;
+
+  try {
+    if (!reduced) {
+      playCaptureSound("throw");
+      await animate(ball, [
+        { transform: move(fromX, fromY, -210) },
+        { transform: move(fromX * .37, -Math.max(48, innerHeight * .11), 110), offset: .58 },
+        { transform: move(0, 0, 360) },
+      ], 470, { easing: "ease-out" }).finished;
+
+      ball.classList.add("open");
+      playCaptureSound("draw");
+      pulse();
+      if (foe) {
+        pull = animate(foe, [
+          visible,
+          { ...absorbed, opacity: .92, transform: "scale(.65)", offset: .42 },
+          absorbed,
+        ], 340, { easing: "ease-in" });
+        await pull.finished;
+      } else await wait(340);
+      ball.classList.remove("open");
+      await animate(ball, [
+        { transform: move(0, 0) },
+        { transform: move(0, drop), offset: .65 },
+        { transform: move(0, drop - 12), offset: .82 },
+        { transform: move(0, drop) },
+      ], 380).finished;
+      playCaptureSound("land");
+      await wait(180);
+
+      for (let shake = 0; shake < 3; shake++) {
+        const direction = shake === 1 ? -1 : 1;
+        playCaptureSound("shake");
+        await animate(ball, [
+          { transform: move(0, drop) },
+          { transform: move(-5 * direction, drop, -23 * direction) },
+          { transform: move(5 * direction, drop, 16 * direction) },
+          { transform: move(0, drop) },
+        ], 250, { easing: "ease-in-out" }).finished;
+        await wait(165);
+      }
+
+      if (caught) {
+        stars.style.top = y + drop - 16 + "px";
+        animate(stars, [
+          { opacity: 0, transform: "translate(-50%, 0) scale(.5)" },
+          { opacity: 1, transform: "translate(-50%, -32px) scale(1.2)" },
+          { opacity: 0, transform: "translate(-50%, -45px) scale(1)" },
+        ], 660);
+      } else {
+        ball.classList.add("open");
+        flash.style.top = y + drop + "px";
+        pulse();
+        animate(ball, [{ opacity: 1 }, { opacity: 0 }], 280);
+        if (foe) {
+          release = animate(foe, [
+            { ...absorbed, transform: `translateY(${drop}px) scale(.04)` },
+            { opacity: 1, transform: "translateY(-18px) scale(.7)", offset: .6 },
+            visible,
+          ], 440, { easing: "ease-out" });
+        }
+      }
+    } else {
+      ball.style.transform = move(0, drop);
+    }
+    playCaptureSound(caught ? "caught" : "escape");
+    result.textContent = caught ? "Capturado!" : "Escapou da bola!";
+    result.hidden = false;
+    await wait(reduced ? 650 : 850);
+  } finally {
+    release?.cancel();
+    pull?.cancel();
+    stage.remove();
+  }
+}
+
+function animateHP(bar, from, to) {
+  if (!bar) return;
+  const start = performance.now();
+  function frame(t) {
+    if (!bar.isConnected) return;
+    const k = Math.min(1, (t - start) / 260);
+    bar.value = from + (to - from) * k;
+    const ratio = bar.value / bar.max;
+    bar.style.accentColor =
+      ratio <= 0.2 ? "#ed5555" : ratio <= 0.5 ? "#ecc550" : "#459e66";
+    if (k < 1) requestAnimationFrame(frame);
+  }
+  frame(start);
+}
+function battleEnding(won, message) {
+  const stage = $("arena").cloneNode(true);
+  stage.removeAttribute("id");
+  stage.className = "ending";
+  stage.hidden = false;
+  stage.querySelector(".console")?.remove();
+  document.body.append(stage);
+  const loser = stage.querySelector(won ? ".foe" : ".own"),
+    hp = stage.querySelector(won ? ".foe-hud progress" : ".own-hud progress");
+  if (hp) animateHP(hp, hp.value, 0);
+  setTimeout(
+    () => loser?.querySelector(".fighter")?.classList.add("fall"),
+    270,
+  );
+  setTimeout(() => {
+    const box = document.createElement("div");
+    box.className = "resultBox";
+    box.innerHTML =
+      "<h2>" +
+      (won ? "Vitória!" : "Fim da batalha") +
+      "</h2><p>" +
+      esc(message) +
+      "</p><button>Continuar</button>";
+    stage.append(box);
+    box.querySelector("button").onclick = () => {
+      stage.remove();
+      renderEvolution(state);
+      renderMoveLesson(state);
+    };
+    box.querySelector("button").focus();
+  }, 1100);
+}
+function fullFacility(title, body, footer = "", theme = activeFacility, portrait = "") {
+  const image = portrait ? '<img src="' + esc(portrait) + '" alt="">' : "";
+  return '<section class="facility-screen" data-theme="' + esc(theme) +
+    '" aria-label="' + esc(title) + '"><aside><div class="npc-portrait" aria-hidden="true">' +
+    image + '</div></aside><div class="facility-body">' + body + '</div>' +
+    '<div class="facility-footer">' + footer + '</div></section>';
+}
+
+const shopFilters = [
+  ["all", "Todos"], ["heal", "Poções"], ["balls", "Bolas"], ["stones", "Pedras"],
+  ["berry", "Bagas"], ["combat", "Combate"], ["held", "Equipáveis"],
+];
+
+function shopScreen() {
+  const work = workOption(state.you, "store");
+  return '<section class="shop-screen" data-theme="store" aria-labelledby="shopTitle">' +
+    '<div class="shop-heading">' + uiIcon("backpack") + '<h2 id="shopTitle">Loja de Itens</h2></div>' +
+    '<div class="shop-layout"><aside class="shop-reception">' +
+    '<img src="npc/loja.png" alt="Atendente da loja"><div class="shop-speech"><strong>Olá!</strong><p>Escolha os itens que quer comprar ou vender.</p></div>' +
+    '</aside><div class="shop-catalog-panel"><div class="shop-filter-chips" aria-label="Categorias">' +
+    shopFilters.map(([id, label]) =>
+      '<button type="button" data-shop-filter="' + id + '">' + label + '</button>',
+    ).join("") + '</div><div id="shopCatalog" class="catalog" aria-label="Itens da loja"></div></div>' +
+    '<div class="shop-cart-panel"><div class="shop-modes" aria-label="Modo do catálogo">' +
+    '<button type="button" data-shop-mode="buy">Compra</button>' +
+    '<button type="button" data-shop-mode="sell">Venda</button></div>' +
+    '<section class="shop-cart" id="shopCart" aria-label="Carrinho"></section></div></div>' +
+    '<div class="facility-footer shop-footer"><strong class="shop-balance">Saldo · ₽ ' +
+    state.you.money.toLocaleString("pt-BR") + '</strong><span id="selectedShopItem"></span>' +
+    '<div class="shop-quantity"><label for="qty">Quantidade</label>' +
+    '<div class="quantity-control"><input id="qty" type="number" min="1" max="99" value="1">' +
+    '<span><button type="button" data-qty-step="up" aria-label="Aumentar quantidade">▴</button>' +
+    '<button type="button" data-qty-step="down" aria-label="Diminuir quantidade">▾</button></span></div></div>' +
+    '<button type="button" data-cart-add="buy">Adicionar compra</button>' +
+    '<button type="button" data-cart-add="sell">Adicionar venda (50%)</button>' +
+    '<button type="button" class="primary" id="shopCheckout" data-checkout disabled>Confirmar · 1 ação</button>' +
+    '</div>' + (work ? '<div class="facility-footer shop-work">' + work + '</div>' : '') + '</section>';
+}
+
+function updateCatalog(resetScroll = false) {
+  const catalog = $("shopCatalog");
+  if (!catalog) return;
+  const selling = shopMode === "sell";
+  const entries = Object.entries(state.shop).filter(([id, item]) => {
+    if (selling && !state.you.items[id]) return false;
+    if (shopFilter === "all") return true;
+    if (shopFilter === "heal") return id === "potion";
+    if (shopFilter === "balls") return id.endsWith("-ball");
+    if (shopFilter === "stones") return id.endsWith("-stone") || item.category === "megaStone";
+    if (shopFilter === "held") return item.held && !item.category && !id.endsWith("-stone");
+    return item.category === shopFilter;
+  });
+  if (!entries.some(([id]) => id === shopItem)) shopItem = entries[0]?.[0] || "";
+  const selected = state.shop[shopItem];
+  const pos = resetScroll ? 0 : catalog.scrollTop;
+  catalog.innerHTML = entries.map(([id, item]) =>
+    '<button type="button" data-shop-item="' + esc(id) + '" data-item-summary="' + esc(id) + '" aria-pressed="' + (id === shopItem) +
+    '">' + itemArt(id) + '<span><b>' + esc(item.name) + '</b><small>Na mochila · ' +
+    (state.you.items[id] || 0) + '</small></span><strong>₽ ' +
+    (selling ? Math.floor(item.price / 2) : item.price).toLocaleString("pt-BR") + '</strong></button>'
+  ).join("") || '<p>' + (selling ? 'Nenhum item da mochila nesta seleção.' : 'Nenhum item encontrado.') + '</p>';
+  catalog.scrollTop = pos;
+  for (const button of $("overlay").querySelectorAll("[data-shop-filter], [data-shop-mode]"))
+    button.setAttribute("aria-pressed", String(button.dataset.shopFilter === shopFilter || button.dataset.shopMode === shopMode));
+  $("selectedShopItem").innerHTML = selected ? itemArt(shopItem) + '<b>' + esc(selected.name) + '</b>' : "";
+  $("overlay").querySelector('[data-cart-add="buy"]').disabled = !selected;
+  $("overlay").querySelector('[data-cart-add="sell"]').disabled = !(state.you.items[shopItem] > 0);
+  renderShopCart();
+}
+
+function addToShopCart(sell) {
+  const qty = Number(v("qty"));
+  if (!shopItem || !Number.isInteger(qty) || qty < 1 || qty > 99)
+    return toast("Escolha um item e uma quantidade de 1 a 99.");
+  const key = (sell ? "sell:" : "buy:") + shopItem;
+  const count = (shopCart.get(key)?.qty || 0) + qty;
+  if (count > 99) return toast("Limite de 99 unidades por item e operação.");
+  if (sell && count > (state.you.items[shopItem] || 0))
+    return toast("Você não tem unidades suficientes para vender.");
+  if (!shopCart.has(key) && shopCart.size >= 60) return toast("Carrinho cheio.");
+  shopCart.set(key, { item: shopItem, qty: count, sell });
+  renderShopCart();
+}
+
+function renderShopCart() {
+  const cart = $("shopCart");
+  if (!cart) return;
+  const scroll = cart.querySelector(".shop-cart-lines")?.scrollTop || 0;
+  let purchases = 0, sales = 0, stockOk = true;
+  const rows = [...shopCart].map(([key, { item, qty, sell }]) => {
+    const { name, price } = state.shop[item];
+    const subtotal = qty * (sell ? Math.floor(price / 2) : price);
+    if (sell) {
+      sales += subtotal;
+      if (qty > (state.you.items[item] || 0)) stockOk = false;
+    } else purchases += subtotal;
+    return '<li>' + itemArt(item) + '<div><strong>' + esc(name) + '</strong><small>' +
+      (sell ? "Venda" : "Compra") + ' ×' + qty + ' · ₽ ' + subtotal +
+      '</small></div><button type="button" data-cart-remove="' + esc(key) +
+      '" aria-label="' + esc("Remover " + (sell ? "venda de " : "compra de ") + name) + '">×</button></li>';
+  }).join("");
+  const net = purchases - sales;
+  const message = !stockOk ? "Estoque insuficiente para a venda." :
+    net > state.you.money ? "Saldo insuficiente." :
+    !state.you.actions ? "Sem ações disponíveis." : "";
+  cart.innerHTML = '<h3>Carrinho</h3><ul class="shop-cart-lines">' + rows + '</ul>' +
+    (!rows ? '<div class="shop-empty-cart">' + uiIcon("backpack") +
+      '<p>Seu carrinho está vazio.</p></div>' : '') +
+    '<div class="shop-cart-totals">' + (rows ? '<span>Compras · ₽ ' + purchases.toLocaleString("pt-BR") +
+    '</span><span>Vendas · ₽ ' + sales.toLocaleString("pt-BR") + '</span>' : '') +
+    '<strong>' + (net < 0 ? "A receber" : "A pagar") + ' · ₽ ' +
+    Math.abs(net).toLocaleString("pt-BR") + '</strong></div>' +
+    (message ? '<p class="shop-cart-message" role="status">' + message + '</p>' : '');
+  $("shopCheckout").disabled = !rows || Boolean(message);
+  cart.querySelector(".shop-cart-lines").scrollTop = scroll;
+}
+function gymDetails(p) {
+  const next = p.badges.length + 1;
+  const elite = p.loc === leagueIsland;
+  const index = elite ? 8 + (p.elite >= 4 ? 3 : (p.eliteRun ?? 0)) : Number(p.loc.slice(4)) - 1;
+  return {
+    gym: state.gyms[index],
+    reason: elite && !hasLeagueAccess(p) ? "Conquiste as 8 insígnias" :
+      elite && p.elite >= 4 ? "Liga concluída" :
+      !elite && p.loc !== "city" + next ? "Este ginásio não é seu próximo desafio" :
+      p.done || (!p.actions && p.eliteRun == null) ? "Sem ações disponíveis" :
+      !p.party.some(m => m.hp > 0) ? "Leve um Pokémon apto" : "",
+  };
+}
+
+function pokemonCenter(p) {
+  const team = Array.from({ length: 6 }, (_, index) => {
+    const m = p.party[index];
+    if (!m) return '<li class="center-mon center-vacant">Vaga livre</li>';
+    const status = statusName(m);
+    const fraction = m.hp / m.maxhp;
+    const hpColor = fraction <= .2 ? "#ce4a58" : fraction <= .5 ? "#bb811f" : "#3eaa57";
+    return '<li class="center-mon"><div class="center-mon-main">' + sprite(m) +
+      '<div><strong>' + esc(m.name) + '</strong><span>Nv. ' + m.level + '</span>' +
+      (status ? '<span class="center-status">' + esc(status) + '</span>' : '') +
+      '</div></div><div class="center-hp"><b>HP</b><progress aria-label="HP de ' +
+      esc(m.name) + '" style="accent-color:' + hpColor + '" data-health="' + esc(m.uid) +
+      '" value="' + m.hp + '" max="' + m.maxhp + '"></progress><span data-hp-text="' +
+      esc(m.uid) + '">' + m.hp + ' / ' + m.maxhp + '</span></div></li>';
+  }).join("");
+  const canHeal = p.needsHealing;
+  const message = !p.party.length ? "Traga sua equipe para receber atendimento." :
+    canHeal ? "Posso recuperar o HP, os PP e as condições de status da sua equipe." :
+    "Sua equipe está pronta para voltar à expedição.";
+  const work = workOption(p, "center");
+  const canAfford = p.money >= state.healCost;
+  return '<section class="center-screen" data-theme="center" aria-labelledby="centerTitle">' +
+    '<div class="center-heading"><span aria-hidden="true" class="center-emblem">+</span>' +
+    '<h2 id="centerTitle">Centro Pokémon</h2></div>' +
+    '<div class="center-layout"><aside class="center-reception">' +
+    '<img src="npc/centro.png" alt="Atendente do Centro Pokémon">' +
+    '<p>' + message + '</p></aside><div class="center-care">' +
+    '<div class="center-team-heading"><h3>Sua equipe</h3><span>' + p.party.length +
+    '/6 Pokémon</span></div><ul class="center-team">' + team + '</ul>' +
+    '<div class="center-treatment"><strong class="center-balance">Saldo · ₽ ' +
+    p.money.toLocaleString("pt-BR") + '</strong><button type="button" class="center-heal" data-action="heal"' +
+    (canHeal && canAfford && !p.done && p.actions > 0 ? '' : ' disabled') +
+    '><span aria-hidden="true">+</span><strong>Curar equipe</strong><small>₽ ' + state.healCost +
+    ' · 1 ação</small></button>' +
+    (canHeal && !canAfford ? '<p class="center-balance-warning">Saldo insuficiente para a cura.</p>' : '') +
+    '</div>' +
+    '</div></div>' + (work ? '<footer class="center-work">' + work + '</footer>' : '') + '</section>';
+}
+
+function elitePanel(p, gym, reason, team) {
+  const complete = p.elite >= 4;
+  const interval = p.eliteRun != null;
+  const wins = complete ? 4 : (p.eliteRun ?? 0);
+  const steps = state.gyms.slice(8).map((leader, index) => {
+    const status = index < wins ? "Vencido" : index === wins ? "Próximo" : "Pendente";
+    return '<li class="elite-step' + (index < wins ? ' won' : index === wins ? ' current' : '') +
+      '"' + (index === wins ? ' aria-current="step"' : '') + '>' +
+      '<span class="elite-step-number">' + (index < wins ? '✓' : index + 1) +
+      '</span><div><b>' + esc(leader.name) + '</b><small>' + status + '</small></div></li>';
+  }).join("");
+  const portrait = gym.portrait ? '<img src="npc/lideres/' +
+    encodeURIComponent(gym.portrait) + '.png" alt="">' : "";
+  const challenge = reason ? '<p class="elite-unavailable">' + esc(reason) + '</p>' :
+    btn(interval ? "Próxima batalha" : "Iniciar sequência · 1 ação", "gym", {}, "primary");
+  return '<section class="elite-screen" aria-labelledby="eliteTitle"><div class="elite-frame">' +
+    '<div class="elite-header"><div class="elite-heading"><span class="elite-crest" aria-hidden="true"><i></i></span>' +
+    '<div><small>Ilha da Liga</small><h2 id="eliteTitle">Elite Four</h2></div></div>' +
+    '</div>' +
+    '<ol class="elite-steps" aria-label="Etapas da Elite Four">' + steps + '</ol>' +
+    (complete ? '<p class="elite-complete">Você venceu os quatro adversários.</p>' :
+      '<div class="elite-match"><div class="elite-portrait">' + portrait + '</div><div class="elite-lineup">' +
+      '<div class="elite-match-heading"><small>' + (interval ? "Intervalo · Batalha " : "Primeira batalha · ") +
+      (interval ? (wins + 1) + " de 4" : "1 de 4") + '</small><h3>' + esc(gym.name) + '</h3></div>' +
+      '<div class="facility-list gym-team" aria-label="Equipe adversária">' + team + '</div></div></div>' +
+      '<footer class="elite-actions">' + (interval ?
+        '<p>' + uiIcon("backpack") + 'Use itens da Mochila neste intervalo sem gastar ações.</p>' : '') +
+      '<div>' + (interval ? btn("Encerrar sequência", "abandonElite", {}, "elite-abandon") +
+        '<button type="button" data-drawer="bag">' + uiIcon("backpack") +
+        'Abrir Mochila</button>' : '') + challenge + '</div></footer>') +
+    '</div></section>';
+}
+
+const labStats = [
+  ["hp", "HP"], ["atk", "Ataque"], ["def", "Defesa"],
+  ["spa", "Atq. especial"], ["spd", "Def. especial"], ["spe", "Velocidade"],
+];
+
+function laboratoryFields(mon, lab) {
+  const abilityOptions = lab.abilities[mon.pokemonId] || {};
+  const natureOptions = lab.natures.map(({ name, plus, minus }) => {
+    const label = stat => labStats.find(([id]) => id === stat)?.[1];
+    return opt(name, name + (plus ? " (+" + label(plus) + " / −" + label(minus) + ")" : ""));
+  }).join("");
+  const field = (id, max, value, label) =>
+    '<input type="number" id="' + id + '" min="0" max="' + max + '" step="1" required value="' +
+    value + '" aria-label="' + label + '">';
+  return '<div class="lab-options"><label>Natureza' + select("labNature", natureOptions) +
+    '</label><label>Habilidade' + select("labAbility", Object.entries(abilityOptions)
+      .map(([slot, name]) => opt(slot, name + (slot === "H" ? " · Oculta" : ""))).join("")) +
+    '</label></div><div class="lab-stat-list"><table><thead><tr><th scope="col">Atributo</th>' +
+    '<th scope="col">Atual</th><th scope="col">IV</th><th scope="col">EV</th></tr></thead><tbody>' +
+    labStats.map(([stat, label]) =>
+      '<tr><th scope="row">' + label + '</th><td>' + mon.stats[stat] + '</td><td>' +
+      field("labIv-" + stat, 31, mon.ivs[stat], "IV de " + label) + '</td><td>' +
+      field("labEv-" + stat, 252, mon.evs?.[stat] || 0, "EV de " + label) + '</td></tr>',
+    ).join("") + '</tbody></table></div><p id="labEvTotal"></p><p>Felicidade atual · ' +
+    mon.happiness + ' / 255</p>';
+}
+
+function updateLabEditor() {
+  const lab = state.laboratory;
+  const container = $("labFields");
+  if (!lab || !container) return;
+  const p = state.you;
+  const mon = [...p.party, ...p.box].find(m => m.uid === v("labPokemon"));
+  if (!mon) return;
+  container.innerHTML = laboratoryFields(mon, lab);
+  $("labNature").value = mon.nature || "Serious";
+  $("labAbility").value = String(mon.abilitySlot ?? 0);
+  if (!$("labAbility").value) $("labAbility").selectedIndex = 0;
+  updateLabTotal();
+}
+
+function updateLabTotal() {
+  const output = $("labEvTotal");
+  if (!output) return;
+  const total = labStats.reduce((sum, [stat]) => sum + Number(v("labEv-" + stat) || 0), 0);
+  output.textContent = total + " / 510 EVs";
+  const p = state.you;
+  $("labSubmit").disabled = total > 510 || p.money < state.laboratory.cost ||
+    p.done || !p.actions || p.eliteRun != null;
+}
+$("content").addEventListener("change", e => {
+  if (e.target.id === "labPokemon") updateLabEditor();
+});
+$("content").addEventListener("input", e => {
+  if (e.target.id.startsWith("labEv-")) updateLabTotal();
+});
+
+function laboratoryScreen(p) {
+  const lab = state.laboratory;
+  const pokemon = [...p.party, ...p.box];
+  if (!lab) return "";
+  const notice = p.money < lab.cost ? "Saldo insuficiente para modificar." :
+    !p.actions || p.done ? "Sem ações disponíveis." : "";
+  return '<section class="lab-screen" aria-labelledby="labTitle"><div class="lab-heading">' +
+    '<h2 id="labTitle">Laboratório</h2><span>' + esc(locName(p.loc)) + '</span></div>' +
+    '<div class="lab-layout"><aside><img src="npc/laboratorio.png" alt="Cientista do laboratório">' +
+    '<p>Cada modificação reduz a felicidade do Pokémon em ' + lab.happinessLoss +
+    ' pontos, até o mínimo de zero.</p></aside><div class="lab-editor">' +
+    (pokemon.length ? '<label>Pokémon' + select("labPokemon",
+      pokemon.map(m => opt(m.uid, m.name + " · Nv. " + m.level + (p.party.includes(m) ? "" : " · Box"))).join("")) +
+      '</label><div id="labFields"></div>' : '<p>Capture um Pokémon para modificar seus atributos.</p>') +
+    '<details id="labJobs" class="lab-jobs"><summary>Vagas do laboratório</summary>' + jobBoard(p, "lab") + '</details>' +
+    '</div></div><footer class="lab-footer"><strong>Saldo · ₽ ' + p.money.toLocaleString("pt-BR") + '</strong>' +
+    (notice ? '<p>' + notice + '</p>' : '') +
+    (pokemon.length ? '<button type="button" id="labSubmit" data-action="modifyPokemon">Modificar · ₽ ' +
+      lab.cost.toLocaleString("pt-BR") + ' · 1 ação</button>' : '') +
+    workOption(p, "lab") + '</footer></section>';
+}
+
+function facilityScreen() {
+  const p = state.you;
+  if (activeFacility === "post") return jobPost(p);
+  if (activeFacility === "center") return pokemonCenter(p);
+  if (activeFacility === "lab") return laboratoryScreen(p);
+  const {gym, reason} = gymDetails(p);
+  const team = gym.team.map((name, index) => '<article class="facility-mon">' +
+    sprite({name, slug:name, spriteId:name}) +
+    '<div><b>' + esc(name[0].toUpperCase() + name.slice(1)) +
+    '</b><span>Nível ' + gym.levels[index] + '</span></div></article>').join("");
+  if (p.loc === leagueIsland) return elitePanel(p, gym, reason, team);
+  return fullFacility("Ginásio · " + gym.name, '<div class="gym-opponent"><small>Ginásio</small>' +
+    '<h2>' + esc(gym.name) + '</h2></div>' +
+    '<div class="facility-list gym-team" aria-label="Equipe adversária">' + team + '</div>',
+    reason ? '<p>' + esc(reason) + '</p>' : btn("Desafiar", "gym", {}, "primary"),
+    "gym", gym.portrait ? "npc/lideres/" + encodeURIComponent(gym.portrait) + ".png" : "");
+}
+
+async function showHealing(party) {
+  const bars = [...$("content").querySelectorAll("[data-health]")];
+  for (const bar of bars) {
+    const mon = party.find(m => m.uid === bar.dataset.health);
+    if (!mon) continue;
+    animateHP(bar, bar.value, mon.hp);
+    bar.parentElement.querySelector("[data-hp-text]").textContent = mon.hp + " / " + mon.maxhp;
+  }
+  if (!muted && audio?.state === "running") {
+    [523, 659, 784, 1047].forEach((frequency, index) => {
+      const oscillator = audio.createOscillator();
+      const gain = audio.createGain();
+      const start = audio.currentTime + index * 0.085;
+      oscillator.frequency.value = frequency;
+      gain.gain.setValueAtTime(0.065, start);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.15);
+      oscillator.connect(gain).connect(audio.destination);
+      oscillator.start(start);
+      oscillator.stop(start + 0.16);
+    });
+  }
+  if (bars.length) await new Promise(resolve => setTimeout(resolve, 480));
+}
+const facilityNames = {
+  center: "Centro Pokémon", store: "Loja", post: "Posto de trabalho", lab: "Laboratório",
+};
+
+function updatePostScroll() {
+  const jobs = $("postJobs");
+  if (!jobs) return;
+  document.querySelector('[data-post-scroll="-1"]').disabled = jobs.scrollLeft < 1;
+  document.querySelector('[data-post-scroll="1"]').disabled =
+    jobs.scrollLeft + jobs.clientWidth >= jobs.scrollWidth - 1;
+}
+window.addEventListener("resize", updatePostScroll);
+
+function jobPost(p) {
+  return '<section class="post-screen" data-theme="post" aria-labelledby="postTitle">' +
+    '<div class="post-heading">' + uiIcon("backpack") +
+    '<h2 id="postTitle">Quadro de empregos</h2><span>' + esc(locName(p.loc)) + '</span></div>' +
+    '<div class="post-layout"><aside class="post-reception">' +
+    '<img src="npc/posto.png" alt="Atendente do Posto de Trabalho"></aside>' +
+    '<div class="post-vacancies"><div class="post-nav">' +
+    '<button type="button" data-post-scroll="-1" aria-controls="postJobs" aria-label="Vagas anteriores">‹</button>' +
+    '<button type="button" data-post-scroll="1" aria-controls="postJobs" aria-label="Mais vagas">›</button>' +
+    '</div>' + jobBoard(p) + '</div></div></section>';
+}
+
+function jobBoard(p, facility) {
+  const jobs = Object.entries(state.jobs).filter(([,job]) => !facility || job.facility === facility);
+  if (!jobs.length) return "";
+  return '<div class="job-board" id="postJobs" tabindex="0" role="region" aria-label="Vagas disponíveis">' +
+    jobs.map(([id, job]) => {
+    const place = job.place || p.loc;
+    const active = p.job === id && p.jobLocation === place;
+    const workplace = job.facility === "lab" && !state.laboratory ? "Vilas com laboratório" : job.place ? locName(place) :
+      facilityNames[job.facility] + " de " + locName(place);
+    const requirement = job.requirement;
+    const progress = requirement.target
+      ? '<progress aria-label="Progresso do requisito de XP" value="' +
+        Math.min(requirement.current, requirement.target) + '" max="' + requirement.target + '"></progress>'
+      : "";
+    const label = p.job ? "Trocar · 1 ação" : "Assumir · 1 ação";
+    const action = active ? '<small class="post-current">Emprego atual</small>' :
+      requirement.met && (job.facility !== "lab" || state.laboratory) ? btn(label, "hire", { job: id }) :
+      '<button type="button" disabled>' + label + '</button>';
+    const icons = { store:"▣", center:"+", wild:"❧", lab:"✦" };
+    const heading = '<div class="post-job-title"><i aria-hidden="true">' + icons[job.facility] +
+      '</i><b>' + esc(job.name) + '</b></div>';
+    return '<article data-job="' + id + '">' +
+      heading + '<span>Grau ' + (job.rank + 1) + ' · ' + esc(workplace) + '</span><strong class="job-pay">₽ ' + job.pay + '</strong>' +
+      (job.limit ? '<small>Até ' + job.limit + (job.limit === 1 ? ' turno' : ' turnos') + ' por rodada</small>' : '') +
+      '<div class="post-requirement">' + (requirement.text === "Nenhum" ? "" :
+        '<small>' + esc(requirement.text) + '</small>') + progress + '</div>' + action + '</article>';
+  }).join("") + '</div>';
+}
+
+function workOption(p, facility) {
+  const job = state.jobs[p.job];
+  return job && p.jobLocation === p.loc && job.facility === facility
+    ? '<p>' + esc(job.name) + ' · ₽ ' + job.pay + ' por turno de trabalho</p>' +
+      (job.limit && job.shifts >= job.limit ? '<small>Limite de turnos desta rodada atingido.</small>' :
+        job.requirement.met ? btn("Trabalhar · 1 ação", "work") :
+        '<small>' + esc(job.requirement.text) + '</small>')
+    : "";
+}
+
+function leagueEntryReason() {
+  const p = state.you;
+  if (!hasLeagueAccess(p)) return "São necessárias 8 insígnias · " + p.badges.length + "/8";
+  if (state.phase !== "actions" || p.done || p.enc) return "Aguarde a próxima fase de ações.";
+  if (p.loc === leagueIsland) return "";
+  if (!leaguePorts.includes(p.loc)) return "O barco para a Ilha da Liga sai de " + leaguePorts.map(locName).join(" ou ") + ".";
+  return p.actions > 0 ? "" : "Sem ações disponíveis para viajar.";
+}
+
+function leagueScene() {
+  const reason = leagueEntryReason();
+  const onIsland = state.you.loc === leagueIsland;
+  return '<section class="destination league"><h2>Ilha da Liga · Elite Four</h2>' +
+    '<button type="button" class="building league-entrance" data-enter-league="true"' +
+    (reason ? ' disabled aria-describedby="league-entry-reason"' : '') + '><b>' +
+    (onIsland ? 'Entrar na Elite Four' : 'Confirmar entrada · 1 ação') + '</b></button>' +
+    (reason ? '<p id="league-entry-reason">' + esc(reason) + '</p>' : '') +
+    '</section>';
+}
+
+const labVillageScenes = {
+  village3: "vila-das-flores-laboratorio.png",
+  village4: "vila-da-geada-laboratorio.png",
+  village6: "vila-das-cinzas-laboratorio.png",
+};
+
+function biomeActions(p) {
+  const vacancy = state.jobs[p.job];
+  let work = "";
+  if (Object.values(state.jobs).some(job => job.place === p.loc)) {
+    const reason = vacancy?.place !== p.loc || p.jobLocation !== p.loc
+      ? "Assuma uma vaga deste bioma no Posto de trabalho."
+      : vacancy.limit && vacancy.shifts >= vacancy.limit ? "Limite de turnos desta rodada atingido."
+      : vacancy.requirement.met ? "" : vacancy.requirement.text;
+    const button = '<button type="button" class="biome-action biome-work" data-action="work"' +
+      (reason ? ' disabled' : '') + '>' + uiIcon("map-post") + 'Trabalhar</button>';
+    work = reason ? '<span class="biome-work-locked" tabindex="0" aria-label="Trabalhar indisponível" ' +
+      'aria-describedby="biomeWorkHint">' + button +
+      '<span id="biomeWorkHint" class="biome-work-hint" role="tooltip">' + esc(reason) + '</span></span>' : button;
+  }
+  return '<div class="biome-actions" aria-label="Ações do local">' +
+    '<button type="button" class="biome-action biome-explore" data-action="explore">' +
+    uiIcon("compass") + 'Explorar</button>' + work + '</div>';
+}
+
+function locationScene() {
+  const p = state.you;
+  if (p.loc === leagueIsland) return leagueScene();
+  const location = LOCATIONS.find((site) => site.id === p.loc);
+  const town = location.kind !== "biome";
+  const titles = {
+    ...facilityNames,
+    gym: "Ginásio",
+  };
+  const building = (id) =>
+    '<button class="building ' + id + '" data-facility="' + id + '"><b>' +
+    esc(titles[id]) + "</b></button>";
+  const labScene = labVillageScenes[location.id];
+  if (labScene) return '<section class="destination lab-village" data-village="' + location.id +
+    '" style="background-image:url(scenes/' + labScene + ')"><h2>' + esc(location.name) +
+    '</h2><small>' + p.actions + ' ações</small><div class="lab-village-buildings">' +
+    building("center") + building("lab") + building("store") + '</div></section>';
+  const gym = location.kind === "city" ? building("gym") : "";
+  const facility = activeFacility;
+  const townArt = location.kind === "city" ? "city-pixel.png" : "village-pixel.png";
+  const biomeArt = location.biome === "caverna" ? "cave-pixel.png" : location.biome + "-pixel.png";
+  const art = town ? townArt : biomeArt;
+  return '<section class="destination ' + (town ? "town " + location.kind : "wild") +
+    '" style="background-image:url(scenes/' + art + ')"><h2>' + esc(location.name) +
+    "</h2><small>" + p.actions + " ações</small>" +
+    (town ? building("center") + building("store") + gym +
+      (location.kind === "city" ? building("post") : "") : biomeActions(p)) +
+    (town && facility ? '<section class="job-panel facility-panel" aria-labelledby="facility-title">' +
+      '<div class="job-panel-heading"><h3 id="facility-title">' + esc(titles[facility]) + '</h3>' +
+      '<button type="button" data-facility="close" aria-label="Cancelar">×</button>' +
+      '</div><div class="facility-actions"><button type="button" data-confirm-facility="true">' +
+      'Confirmar entrada</button></div></section>' : '') + '</section>';
+}
+
+
+function showItemSummary(event) {
+  const entry = event.target.closest("[data-item-summary]");
+  const tooltip = $("itemTooltip");
+  if (!entry || entry.contains(event.relatedTarget)) return;
+  if (event.type === "pointerout" || event.type === "focusout") {
+    tooltip.hidden = true;
+    return;
+  }
+  const id = entry.dataset.itemSummary;
+  const item = state?.shop[id];
+  const summary = item?.summary || (id === "master-ball" ? "Captura garantida de um Pokémon selvagem." : "");
+  if (!summary) return;
+  tooltip.querySelector("strong").textContent = item?.name || "Master Ball";
+  tooltip.querySelector("span").textContent = summary;
+  tooltip.hidden = false;
+  const rect = entry.getBoundingClientRect();
+  const left = event.type === "pointerover" ? event.clientX + 12 : rect.left;
+  const top = event.type === "pointerover" ? event.clientY + 16 : rect.bottom + 6;
+  tooltip.style.left = Math.max(8, Math.min(left, innerWidth - tooltip.offsetWidth - 8)) + "px";
+  tooltip.style.top = (top + tooltip.offsetHeight <= innerHeight - 8
+    ? top : Math.max(8, rect.top - tooltip.offsetHeight - 6)) + "px";
+}
+for (const type of ["pointerover", "pointerout", "focusin", "focusout"])
+  document.addEventListener(type, showItemSummary);
+document.addEventListener("scroll", () => { $("itemTooltip").hidden = true; }, true);
