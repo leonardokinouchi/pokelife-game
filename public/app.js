@@ -1204,14 +1204,29 @@ document.addEventListener("click", (e) => {
     d.uid = v(d.form + "Mon");
   }
   if (k === "duelTeam") d.uids = [...duelPicks];
-  if (k === "groupFight") {
-    const selections = [...$("arena").querySelectorAll(".group-battle-actions select")].map(el => el.value);
-    if (!selections.length || selections.some(value => !value)) {
-      toast("Escolha uma ação para cada Pokémon.");
-      return;
+  if (k === "duelForfeit" && !window.confirm("Desistir do duelo? O outro lado vence.")) return;
+  if (k === "groupMove" || k === "groupPick") {
+    if (busy) return;
+    groupDraft.slot = d.slot;
+    groupDraft.move = k === "groupMove" ? d.move : "";
+    if (k === "groupPick") {
+      groupDraft.picks[d.slot] = d.command;
+      groupDraft.slot = d.slot + 1;
     }
+    refreshGroupControls();
+    return;
+  }
+  if (k === "groupFight") {
+    const battle = state.duel?.battle;
+    if (!battle || !battle.groups.length) return;
+    const commands = battle.groups.map((group, index) => groupPick(group, index)?.command);
+    if (commands.some(command => !command)) return;
     k = "fight";
-    d.cmd = selections.join(", ");
+    d.cmd = commands.join(", ");
+  }
+  if (k === "fight" && state.phase === "duelos") {
+    d.turn = state.duel.battle.turn;
+    d.version = state.duel.commandVersion;
   }
   if (k === "dodge" && Date.now() + serverOffset < state.race.startsAt) return;
   if (k === "bid") d.amount = Number(v("auctionBid"));
@@ -1245,6 +1260,8 @@ let drawer = "",
   shopItem = "",
   shopFilter = "all",
   shopMode = "buy",
+  shopSearch = "",
+  shopSort = "default",
   combatMenu = "move",
   oldBattle = null,
   previousPhase = "",
@@ -1279,6 +1296,16 @@ const menuBtn = (id, label, icon) =>
   '<button data-drawer="' + id + '" aria-pressed="' + ((personalPanels.has(id) ? personalDrawer : drawer) === id) + '">' +
   uiIcon(icon) + esc(label) + '</button>';
 function initializeScreen() {
+  $("content").addEventListener("input", (e) => {
+    if (e.target.id !== "shopSearch") return;
+    shopSearch = e.target.value;
+    updateCatalog(true);
+  });
+  $("content").addEventListener("change", (e) => {
+    if (e.target.id !== "shopSort") return;
+    shopSort = e.target.value;
+    updateCatalog(true);
+  });
   for (const type of ["pointerover", "pointerout", "focusin", "focusout"])
     $("arena").addEventListener(type, updateMoveTooltip);
   $("sound").textContent = muted ? "♪ ×" : "♪";
@@ -1458,6 +1485,123 @@ function battleBoostChips(boosts = {}) {
   }).join("");
 }
 
+let groupDraft = {key:"", slot:0, move:"", picks:{}};
+let activeLineup = "";
+let dualLog = {key:"", count:0, lines:[], timer:null};
+
+function playDualLog(s, battle, isDuel) {
+  clearTimeout(dualLog.timer);
+  const key = s.code + ":" + s.round;
+  if (!isDuel || battle.mode === "singles" || dualLog.key !== key) {
+    dualLog = {key:isDuel ? key : "", count:battle.logCount, lines:[], timer:null};
+    return;
+  }
+  const newCount = battle.logCount - dualLog.count;
+  if (newCount > 0) dualLog.lines.push(...battle.log.slice(-newCount));
+  dualLog.count = battle.logCount;
+  const report = $("arena").querySelector(".battle-report .message");
+  const advance = () => {
+    if (!report?.isConnected || !dualLog.lines.length) return;
+    report.textContent = dualLog.lines.shift();
+    dualLog.timer = setTimeout(advance, 450);
+  };
+  advance();
+}
+
+function groupPick(group, index) {
+  const enabled = group.options.filter(option => !option.disabled);
+  return enabled.find(option => option.command === groupDraft.picks[index]) ||
+    (enabled.length === 1 && enabled[0].command === "pass" ? enabled[0] : null);
+}
+
+function refreshGroupControls() {
+  $("groupControls").innerHTML = renderGroupControls(state.duel.battle);
+  const battle = state.duel.battle;
+  const affected = battle.groups[groupDraft.slot]?.options
+    .filter(option => groupDraft.move && option.moveKey === groupDraft.move)
+    .flatMap(option => option.target ? [option.target.uid] : option.affected || []) || [];
+  for (const hud of $("arena").querySelectorAll("[data-battle-hp]"))
+    hud.classList.toggle("target-preview", affected.includes(hud.dataset.battleHp));
+  $("groupControls").querySelector('.dual-target:not(:disabled), [aria-pressed="true"]')?.focus({preventScroll:true});
+}
+
+function renderGroupControls(battle) {
+  const duel = state.duel;
+  if (!battle || !duel) return "";
+  const key = [state.code, state.round, battle.turn, duel.commandVersion, battle.groups.map(g => Boolean(g.forced)).join(",")].join(":");
+  if (groupDraft.key !== key) groupDraft = {key, slot:0, move:"", picks:{}};
+  const groups = battle.groups;
+  const waiting = (duel.trainers || []).filter(t => !battle.readySides.includes(t.side));
+  const pending = waiting.map(t => state.players.find(p => p.id === t.id)?.name).filter(Boolean);
+  const partner = duel.trainers?.find(t => t.ally && t.id !== state.you.id);
+  const partnerName = state.players.find(p => p.id === partner?.id)?.name;
+  const partnerStatus = partnerName ? '<p>' + esc(partnerName) +
+    (waiting.includes(partner) ? ' está escolhendo.' : ' está pronto.') + '</p>' : '';
+  if (!groups.length) return '<p>' +
+    esc(pending.length ? "Aguardando " + pending.join(", ") : "Resolvendo o turno…") + '</p>';
+  const slot = groups[groupDraft.slot] ? groupDraft.slot : Math.max(0, groups.findIndex((g,i) => !groupPick(g,i)));
+  groupDraft.slot = slot;
+  const group = groups[slot];
+  const tabs = groups.map((g,i) => '<button type="button" data-action="groupMove" data-args="' +
+    esc(JSON.stringify({slot:i, move:""})) + '" aria-pressed="' + (slot === i) + '"><b>' + esc(g.name) +
+    '</b><small>' + esc(groupPick(g,i)?.label || (g.forced ? "Troca obrigatória" : "Escolher ação")) +
+    '</small></button>').join("");
+  const moves = new Map();
+  for (const option of group.options) {
+    if (option.name) moves.set(option.moveKey || option.name, option);
+  }
+  const menu = [...moves.values()].map(move => {
+    const detail = [moveTypes[move.type] || move.type, moveCategories[move.category] || move.category,
+      move.pp == null ? "" : move.pp + "/" + move.maxpp + " PP",
+      move.basePower ? "Poder " + move.basePower : "",
+      typeof move.accuracy === "number" ? "Precisão " + move.accuracy + "%" : "", move.shortDesc].filter(Boolean).join(" · ");
+    return battleMoveButton({...move, label:move.name}, "groupMove", {slot, move:move.moveKey}, detail);
+  }).join("");
+  const targets = group.options.filter(option => combatMenu === "move" && groupDraft.move && option.moveKey === groupDraft.move);
+  if (targets.length) return renderTargetGrid(battle, slot, targets);
+  const other = group.options.filter(option => !option.name && !option.disabled);
+  const allReady = groups.every((g,i) => groupPick(g,i));
+  return '<div class="dual-commands"><div class="dual-command-grid" aria-label="Pokémon sob seu controle">' + tabs +
+    '</div>' + (combatMenu === "move" && menu ? '<div class="dual-command-grid" aria-label="Golpes">' + menu + '</div>' : '') +
+    (combatMenu === "switch" && other.length ? '<div class="dual-command-grid" aria-label="Trocas">' + other.map(option =>
+      option.kind === "switch" && groups.some((g,i) => i !== slot && groupPick(g,i)?.command === option.command)
+        ? '<button type="button" disabled>' + esc(option.label) + ' · Já selecionado</button>'
+        : btn(option.kind === "switch" ? "Trocar · " + option.label : option.label, "groupPick", {slot, command:option.command})).join("") +
+      '</div>' : '') +
+    partnerStatus + '<footer><button type="button" class="primary" data-action="groupFight"' +
+    (allReady ? '' : ' disabled') + '>Confirmar ações</button></footer></div>';
+}
+
+function battleMoveButton(move, action, args, details) {
+  return '<button type="button" class="battle-move" data-action="' + action + '" data-args="' +
+    esc(JSON.stringify(args)) + '" data-type="' + esc(move.type || "") + '"' +
+    (move.disabled ? ' disabled' : '') + ' data-move-details="' + esc(details) +
+    '" aria-description="' + esc(details) + '"><strong>' + esc(move.label) + '</strong>' +
+    (move.pp != null ? '<span>' + move.pp + '/' + move.maxpp + ' PP</span>' : '') + '</button>';
+}
+
+function renderTargetGrid(battle, slot, options) {
+  const fixed = options.find(option => !option.target);
+  const slots = battle.arenaSlots.flatMap((row, side) => Array.from({length:2}, (_, index) => {
+    const mon = row[index];
+    const target = mon && options.find(option => option.target?.uid === mon.uid);
+    const affected = mon && fixed?.affected?.includes(mon.uid);
+    const choice = target || (affected ? fixed : null);
+    return '<button type="button" class="dual-target" data-action="groupPick" data-args="' +
+      esc(JSON.stringify({slot, command:choice?.command})) + '"' +
+      (choice ? '' : ' disabled') + '><small>' + (side ? "Seu lado" : "Rival") + ' ' +
+      (index + 1) + '</small><strong>' + esc(mon?.name || "Vazio") + '</strong><small>' +
+      (affected ? (fixed.affected.length > 1 ? "Atingido junto" : "Alvo do golpe") :
+        target ? "Alvo válido" : "Fora do alcance") + '</small></button>';
+  })).join("");
+  return '<div class="dual-target-panel"><b>' + esc(options[0].name) + '</b><p>' +
+    (fixed ? "O alcance deste golpe é fixo." : "Escolha uma posição para atingir.") +
+    '</p><div class="dual-target-grid' + (fixed ? ' fixed-range' : '') + '" aria-label="Posições da arena">' + slots +
+    '</div><footer>' + btn("Voltar aos golpes", "groupMove", {slot, move:""}) +
+    (fixed ? btn("Usar golpe", "groupPick", {slot, command:fixed.command}, "primary") : '') +
+    '</footer></div>';
+}
+
 function arenaView(b, e) {
   const foe = b?.foe || e.wild,
     own = b?.own,
@@ -1472,7 +1616,9 @@ function arenaView(b, e) {
     .filter(changed)
     .map((m) => m.uid);
   if (hit.length) tone(true);
-  if (!oldBattle) combatMenu = b ? "move" : "items";
+  const lineup = (b?.ownActive || [own]).map(mon => mon?.uid || "").join(":");
+  if (!oldBattle || lineup !== activeLineup) combatMenu = b ? "move" : "items";
+  activeLineup = lineup;
   const glitter = new Set(active.filter(m => m?.shiny && !Object.hasOwn(oldBattle || {}, m.uid))
     .map(m => m.uid));
   oldBattle = Object.fromEntries(
@@ -1503,7 +1649,9 @@ function arenaView(b, e) {
       (effects ? '<div class="battle-chips">' + effects + '</div>' : '') + '</div>';
   };
   const choices = b?.choices || [];
-  if (choices.length && choices.every((c) => c.kind === "switch"))
+  const forcedSwitch = choices.length ? choices.every(c => c.kind === "switch") :
+    (b?.groups || []).some(group => group.forced);
+  if (forcedSwitch)
     combatMenu = "switch";
   const list =
     combatMenu === "items"
@@ -1528,20 +1676,15 @@ function arenaView(b, e) {
               c.accuracy != null ? c.accuracy + "%" : "—";
             const details = type + " · " + category + " | Poder " + (c.basePower || "—") +
               " | Precisão " + accuracy + (c.priority ? " | Prioridade " + c.priority : "");
-            return '<button class="battle-move" data-action="fight" data-args="' +
-              esc(JSON.stringify({ cmd: c.command })) + '" data-type="' + esc(c.type || "") + '"' + (c.disabled ? ' disabled' : '') +
-              ' data-move-details="' + esc(details) + '" aria-description="' + esc(details) + '">' +
-              '<strong>' + esc(c.label) + '</strong>' +
-              (c.pp != null ? '<span>' + c.pp + '/' + c.maxpp + ' PP</span>' : '') +
-              '</button>';
+            return battleMoveButton(c, "fight", {cmd:c.command}, details);
           })
           .join("");
-  const tab = (id, name) =>
+  const tab = (id, name, enabled) =>
     '<button data-combat="' +
     id +
     '" aria-pressed="' +
     (combatMenu === id) +
-    '">' +
+    '"' + (enabled ? "" : " disabled") + '>' +
     name +
     "</button>";
   const field = b?.field;
@@ -1550,14 +1693,6 @@ function arenaView(b, e) {
     ...(field?.effects || []),
   ];
   const history = b?.log || [];
-  const logOpen = $("battleLog")?.open;
-  const groupControls = b?.groups?.length
-    ? '<div class="group-battle-actions">' + b.groups.map((group, index) =>
-      '<label>' + esc(group.name) + select("duel-" + b.turn + "-" + index,
-        (group.options.length === 1 ? "" : opt("", "Escolher ação")) +
-        group.options.map(choice => choice.disabled ? '<option disabled>' + esc(choice.label) + '</option>' : opt(choice.command, choice.label)).join("")
-      ) + '</label>').join("") + btn("Confirmar ações", "groupFight", {}, "primary") + '</div>'
-    : '<p>Aguardando os outros treinadores…</p>';
   return (
     '<div class="arenaTitle">' +
     esc(
@@ -1574,15 +1709,17 @@ function arenaView(b, e) {
       battleEffectChips(fieldChips) + '</div>' : '') +
     foeActive.map((m,i) => unit(m,"foe",i) + vitals(m,"foe",i)).join("") +
     ownActive.map((m,i) => unit(m,"own",i) + vitals(m,"own",i)).join("") +
-    '</div><div class="console"><div class="battle-report"><p class="message" role="status">' +
-    esc(b?.log.at(-1) || (foe ? "Um " + foe.name + " apareceu!" : "Duelo")) +
-    '</p>' + (history.length ? '<details id="battleLog"' + (logOpen ? ' open' : '') +
-      '><summary>Histórico</summary><ol>' + history.map(line => '<li>' + esc(line) + '</li>').join("") +
-      '</ol></details>' : '') + '</div><div class="battle-controls"><div class="battleTabs">' +
-    (teamBattle ? '</div><div class="moves">' + groupControls :
-      (b ? tab("move", "Golpes") + tab("switch", "Trocar") : "") +
-      (e ? tab("items", "Itens") : "") +
-      (e?.type === "wild" ? btn("Fugir", "flee") : "") +
+    '</div><div class="console"><div class="battle-report"><h3>Histórico da batalha</h3><p class="message" role="status">' +
+    esc(history.at(-1) || (foe ? "Um " + foe.name + " apareceu!" : "Duelo")) +
+    '</p><ol id="battleLog" tabindex="0" aria-label="Eventos da batalha">' +
+    (history.length ? history : [foe ? "Um " + foe.name + " apareceu!" : "A batalha começou."])
+      .map(line => '<li>' + esc(line) + '</li>').join("") +
+    '</ol></div><div class="battle-controls"><div class="battleTabs">' +
+    tab("move", "Battle", !!b && !forcedSwitch) + tab("switch", "Switch", !!b) +
+    tab("items", "Bag", !!e && !forcedSwitch) +
+    (e?.type === "wild" ? btn("Run", "flee") : !e ? btn("Run", "duelForfeit") :
+      '<button type="button" disabled>Run</button>') +
+    (teamBattle ? '</div><div class="moves" id="groupControls">' + renderGroupControls(b) :
       '</div><div class="moves">' +
       (b?.waiting ? '<p>Aguardando o adversário…</p>' : list || '<p>Nenhuma opção disponível.</p>')) +
     '</div></div></div><div id="battleMoveTooltip" class="battle-move-tooltip" role="tooltip" hidden></div>'
@@ -2425,7 +2562,7 @@ function renderDuelTeam(s) {
     return '<li class="duel-slot' + (lead ? ' opening' : '') + '"><span class="duel-slot-index">' +
       (index + 1) + '</span>' + (mon ? tokenMon(mon) : '<span class="duel-slot-empty"></span>') +
       '<div><b>' + esc(mon?.name || "Espaço vazio") + '</b><small>' +
-      (lead ? "Entra em campo" : "Reserva") + '</small></div>' +
+      (lead ? "Titular " + (index + 1) : "Reserva") + '</small></div>' +
       (!locked && mon && index ? '<button type="button" data-duel-promote="' + esc(mon.uid) +
         '" data-focus="order-' + esc(mon.uid) + '" aria-label="Subir ' + esc(mon.name) + '">↑</button>' : '') +
       '</li>';
@@ -2446,6 +2583,14 @@ function renderDuelTeam(s) {
       '</b><small>' + relation + '</small></span><small class="' + (trainer.ready ? 'ready' : '') +
       '">' + (trainer.ready ? "Pronto" : "Escolhendo") + '</small></li>';
   }).join("");
+  const rivals = selection.trainers.filter(trainer => !trainer.ally && trainer.id !== s.you.id);
+  const rivalTeams = rivals.map(({id}) => {
+    const rival = s.players.find(player => player.id === id);
+    return '<article><h4>' + esc(rival.name) + '</h4><ul>' +
+      rival.party.map(mon => '<li>' + tokenMon(mon) + '<span><b>' + esc(mon.name) +
+        '</b><small>Nv. ' + mon.level + '</small></span></li>').join("") +
+      '</ul></article>';
+  }).join("");
   const ready = duelPicks.length === selection.size;
   screen.innerHTML = '<div class="duel-team-shell"><header class="duel-team-heading">' +
     '<div><small>' + esc(s.duelFormat.selected.label) + '</small><h2>Escalar equipe</h2></div>' +
@@ -2453,11 +2598,13 @@ function renderDuelTeam(s) {
     '<div class="duel-team-layout"><section><h3>Sua equipe</h3><div class="duel-roster">' + roster +
     '</div></section><section><h3>Ordem de entrada</h3><ol class="duel-slots">' + slots +
     '</ol></section><section class="duel-participants"><h3>Treinadores</h3><ul>' + trainers +
-    '</ul></section></div><footer class="duel-team-footer"><p role="status">' +
+    '</ul></section><section class="duel-rivals"><h3>Equipe adversária</h3>' + rivalTeams +
+    '</section></div><footer class="duel-team-footer"><p role="status">' +
     (locked ? "Esperando os outros treinadores." : "Selecione quem vai lutar. Use ↑ para ajustar a ordem.") +
     '</p>' + (locked ? btn("Editar equipe", "duelEdit") :
       '<button type="button" class="primary" data-action="duelTeam"' +
-      (ready ? '' : ' disabled') + '>Confirmar equipe</button>') + '</footer></div>';
+      (ready ? '' : ' disabled') + '>Confirmar equipe</button>') +
+    btn("Desistir", "duelForfeit") + '</footer></div>';
   if (focus) screen.querySelector('[data-focus="' + CSS.escape(focus) + '"]')?.focus({preventScroll:true});
 }
 
@@ -2633,8 +2780,14 @@ function renderWorld() {
   document.body.classList.toggle("fighting", !!(e || b));
   if (e || b) {
     const previous = oldBattle;
+    const history = $("battleLog");
+    const scroll = history && history.scrollHeight - history.scrollTop - history.clientHeight > 8
+      ? history.scrollTop : null;
     setWorldLight($("arena"), e?.startedActions ?? (e ? p.actions : 10));
     $("arena").innerHTML = arenaView(b, e);
+    const log = $("battleLog");
+    log.scrollTop = scroll ?? log.scrollHeight;
+    if (b) playDualLog(s, b, !e);
     const active = [...(b?.ownActive || [b?.own]), ...(b?.foeActive || [b?.foe || e?.wild])];
     for (const m of active) {
       if (!m || previous?.[m.uid] == null) continue;
@@ -2665,9 +2818,15 @@ function renderWorld() {
   else if (drawer === "league") $("content").innerHTML = leagueScene();
   else if (drawer === "shop") {
     const pos = $("shopCatalog")?.scrollTop || 0;
+    const search = $("shopSearch");
+    const editingSearch = search && document.activeElement === search;
     $("content").innerHTML = shopScreen();
     updateCatalog();
     $("shopCatalog").scrollTop = pos;
+    if (editingSearch) {
+      $("shopSearch").focus({ preventScroll: true });
+      $("shopSearch").setSelectionRange(search.selectionStart, search.selectionEnd, search.selectionDirection);
+    }
   }
   else if (drawer === "facility") {
     const scroll = $("postJobs")?.scrollTop || 0;
@@ -2922,34 +3081,46 @@ function fullFacility(title, body, footer = "", theme = activeFacility, portrait
 }
 
 const shopFilters = [
-  ["all", "Todos"], ["heal", "Poções"], ["balls", "Bolas"], ["stones", "Pedras"], ["evolution", "Evolução"],
-  ["berry", "Bagas"], ["combat", "Combate"], ["held", "Equipáveis"],
+  ["all", "Todos", "grid"], ["heal", "Poções", "map-lab"], ["balls", "Bolas", "ball"],
+  ["stones", "Pedras", "gem"], ["evolution", "Evolução", "dna"], ["berry", "Bagas", "berry"],
+  ["combat", "Combate", "swords"], ["held", "Equipáveis", "backpack"],
 ];
+const shopSorts = [
+  ["default", "Ordem da loja"], ["name", "Nome (A–Z)"],
+  ["priceAsc", "Menor preço"], ["priceDesc", "Maior preço"],
+];
+const shopSearchKey = (value) => value.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase("pt-BR");
 
 function shopScreen() {
-  const work = workOption(state.you, "store");
+  const work = workOption(state.you, "store", true);
   return '<section class="shop-screen" data-theme="store" aria-labelledby="shopTitle">' +
-    '<div class="shop-heading">' + uiIcon("backpack") + '<h2 id="shopTitle">Loja de Itens</h2>' +
-    actionBalance(state.you) + '</div>' +
+    '<div class="shop-heading">' + uiIcon("ball") + '<h2 id="shopTitle">Loja de Itens</h2>' +
+    '<span class="action-balance">' + uiIcon("tag") + actionsRemaining(state.you) + '</span></div>' +
     '<div class="shop-layout"><aside class="shop-reception">' +
     '<img src="npc/loja.png" alt="Atendente da loja"><div class="shop-speech"><strong>Olá!</strong><p>Escolha os itens que quer comprar ou vender.</p></div>' +
     '</aside><div class="shop-catalog-panel"><div class="shop-filter-chips" aria-label="Categorias">' +
-    shopFilters.map(([id, label]) =>
-      '<button type="button" data-shop-filter="' + id + '">' + label + '</button>',
-    ).join("") + '</div><div id="shopCatalog" class="catalog" aria-label="Itens da loja"></div></div>' +
+    shopFilters.map(([id, label, icon]) =>
+      '<button type="button" data-shop-filter="' + id + '">' + uiIcon(icon) + label + '</button>',
+    ).join("") + '</div><div class="catalog-tools">' +
+    '<label>' + uiIcon("search") + '<input id="shopSearch" type="search" aria-label="Buscar item" placeholder="Buscar item..." value="' +
+    esc(shopSearch) + '"></label><label>' + uiIcon("sort") + '<select id="shopSort" aria-label="Ordenar itens">' +
+    shopSorts.map(([id, label]) =>
+      '<option value="' + id + '"' + (id === shopSort ? ' selected' : '') + '>' + label + '</option>'
+    ).join("") +
+    '</select></label></div><div id="shopCatalog" class="catalog" aria-label="Itens da loja"></div></div>' +
     '<div class="shop-cart-panel"><div class="shop-modes" aria-label="Modo do catálogo">' +
-    '<button type="button" data-shop-mode="buy">Compra</button>' +
-    '<button type="button" data-shop-mode="sell">Venda</button></div>' +
+    '<button type="button" data-shop-mode="buy">' + uiIcon("cart") + 'Compra</button>' +
+    '<button type="button" data-shop-mode="sell">' + uiIcon("tag") + 'Venda</button></div>' +
     '<section class="shop-cart" id="shopCart" aria-label="Carrinho"></section></div></div>' +
-    '<div class="facility-footer shop-footer"><strong class="shop-balance">Saldo · ₽ ' +
-    state.you.money.toLocaleString("pt-BR") + '</strong><span id="selectedShopItem"></span>' +
+    '<div class="facility-footer shop-footer"><strong class="shop-balance">' + uiIcon("wallet") + 'Saldo <span>₽ ' +
+    state.you.money.toLocaleString("pt-BR") + '</span></strong><span id="selectedShopItem"></span>' +
     '<div class="shop-quantity"><label for="qty">Quantidade</label>' +
-    '<div class="quantity-control"><input id="qty" type="number" min="1" max="99" value="1">' +
-    '<span><button type="button" data-qty-step="up" aria-label="Aumentar quantidade">▴</button>' +
-    '<button type="button" data-qty-step="down" aria-label="Diminuir quantidade">▾</button></span></div></div>' +
-    '<button type="button" data-cart-add="buy">Adicionar compra</button>' +
-    '<button type="button" data-cart-add="sell">Adicionar venda (50%)</button>' +
-    '<button type="button" class="primary" id="shopCheckout" data-checkout disabled>Confirmar · 1 ação</button>' +
+    '<div class="quantity-control"><button type="button" data-qty-step="down" aria-label="Diminuir quantidade">−</button>' +
+    '<input id="qty" type="number" min="1" max="99" value="1">' +
+    '<button type="button" data-qty-step="up" aria-label="Aumentar quantidade">+</button></div></div>' +
+    '<button type="button" data-cart-add="buy">' + uiIcon("cart") + 'Adicionar compra</button>' +
+    '<button type="button" data-cart-add="sell">' + uiIcon("tag") + 'Adicionar venda (50%)</button>' +
+    '<button type="button" class="primary" id="shopCheckout" data-checkout disabled>' + uiIcon("check") + 'Confirmar · 1 ação</button>' +
     '</div>' + (work ? '<div class="facility-footer shop-work">' + work + '</div>' : '') + '</section>';
 }
 
@@ -2957,8 +3128,11 @@ function updateCatalog(resetScroll = false) {
   const catalog = $("shopCatalog");
   if (!catalog) return;
   const selling = shopMode === "sell";
+  const query = shopSearchKey(shopSearch.trim());
+  const price = (item) => selling ? Math.floor(item.price / 2) : item.price;
   const entries = Object.entries(state.shop).filter(([id, item]) => {
     if (selling && !state.you.items[id]) return false;
+    if (query && !shopSearchKey(item.name).includes(query)) return false;
     if (shopFilter === "all") return true;
     if (shopFilter === "heal") return id === "potion";
     if (shopFilter === "balls") return id.endsWith("-ball");
@@ -2967,6 +3141,9 @@ function updateCatalog(resetScroll = false) {
     if (shopFilter === "held") return item.held && !item.category && !id.endsWith("-stone");
     return item.category === shopFilter;
   });
+  if (shopSort === "name") entries.sort(([, a], [, b]) => a.name.localeCompare(b.name, "pt-BR"));
+  if (shopSort === "priceAsc") entries.sort(([, a], [, b]) => price(a) - price(b));
+  if (shopSort === "priceDesc") entries.sort(([, a], [, b]) => price(b) - price(a));
   if (!entries.some(([id]) => id === shopItem)) shopItem = entries[0]?.[0] || "";
   const selected = state.shop[shopItem];
   const pos = resetScroll ? 0 : catalog.scrollTop;
@@ -2974,7 +3151,7 @@ function updateCatalog(resetScroll = false) {
     '<button type="button" data-shop-item="' + esc(id) + '" data-item-summary="' + esc(id) + '" aria-pressed="' + (id === shopItem) +
     '">' + itemArt(id) + '<span><b>' + esc(item.name) + '</b><small>Na mochila · ' +
     (state.you.items[id] || 0) + '</small></span><strong>₽ ' +
-    (selling ? Math.floor(item.price / 2) : item.price).toLocaleString("pt-BR") + '</strong></button>'
+    price(item).toLocaleString("pt-BR") + '</strong></button>'
   ).join("") || '<p>' + (selling ? 'Nenhum item da mochila nesta seleção.' : 'Nenhum item encontrado.') + '</p>';
   catalog.scrollTop = pos;
   for (const button of $("overlay").querySelectorAll("[data-shop-filter], [data-shop-mode]"))
@@ -3020,13 +3197,13 @@ function renderShopCart() {
   const message = !stockOk ? "Estoque insuficiente para a venda." :
     net > state.you.money ? "Saldo insuficiente." :
     !state.you.actions ? "Sem ações disponíveis." : "";
-  cart.innerHTML = '<h3>Carrinho</h3><ul class="shop-cart-lines">' + rows + '</ul>' +
+  cart.innerHTML = '<h3>' + uiIcon("cart") + 'Carrinho</h3><ul class="shop-cart-lines">' + rows + '</ul>' +
     (!rows ? '<div class="shop-empty-cart">' + uiIcon("backpack") +
       '<p>Seu carrinho está vazio.</p></div>' : '') +
     '<div class="shop-cart-totals">' + (rows ? '<span>Compras · ₽ ' + purchases.toLocaleString("pt-BR") +
     '</span><span>Vendas · ₽ ' + sales.toLocaleString("pt-BR") + '</span>' : '') +
-    '<strong>' + (net < 0 ? "A receber" : "A pagar") + ' · ₽ ' +
-    Math.abs(net).toLocaleString("pt-BR") + '</strong></div>' +
+    '<strong>' + (net < 0 ? "A receber" : "A pagar") + '<span>₽ ' +
+    Math.abs(net).toLocaleString("pt-BR") + '</span></strong></div>' +
     (message ? '<p class="shop-cart-message" role="status">' + message + '</p>' : '');
   $("shopCheckout").disabled = !rows || Boolean(message);
   cart.querySelector(".shop-cart-lines").scrollTop = scroll;
@@ -3280,12 +3457,14 @@ function jobBoard(p, facility) {
   }).join("") + '</div>';
 }
 
-function workOption(p, facility) {
+function workOption(p, facility, showIcons = false) {
   const job = state.jobs[p.job];
   return job && p.jobLocation === p.loc && job.facility === facility
-    ? '<p>' + esc(job.name) + ' · ₽ ' + job.pay + ' por turno de trabalho</p>' +
+    ? '<p>' + (showIcons ? uiIcon("person") : '') + esc(job.name) + ' · ₽ ' + job.pay + ' por turno de trabalho</p>' +
       (job.limit && job.shifts >= job.limit ? '<small>Limite de turnos desta rodada atingido.</small>' :
-        job.requirement.met ? btn("Trabalhar · 1 ação", "work") :
+        job.requirement.met ? (showIcons
+          ? '<button type="button" data-action="work" data-args="{}">' + uiIcon("map-post") + 'Trabalhar · 1 ação</button>'
+          : btn("Trabalhar · 1 ação", "work")) :
         '<small>' + esc(job.requirement.text) + '</small>')
     : "";
 }

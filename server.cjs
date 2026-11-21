@@ -3,7 +3,7 @@ const http = require("node:http");
 const path = require("node:path");
 const fs = require("node:fs");
 const { randomInt, randomUUID } = require("node:crypto");
-const { player, newRoom, view, command, advanceRace, advanceAuction, advancePractice, startMinigame, minigames } = require("./game.cjs");
+const { player, newRoom, view, command, advanceRace, advanceAuction, advancePractice, startMinigame, eligibleMinigames } = require("./game.cjs");
 const { advanceMillion } = require("./million.cjs");
 const { advancePairGame } = require("./pair-minigames.cjs");
 const { advanceArcade } = require("./arcade.cjs");
@@ -102,8 +102,7 @@ function handleAction(d, roomCode, r, save, realtimeSession) {
     return answer(409, {error:"Sessão em tempo real encerrada."});
   let p;
   if (d.action === "practice") {
-    const kind = minigames.indexOf(d.kind);
-    if (kind < 0) throw Error("Minigame inválido.");
+    if (!eligibleMinigames(2).includes(d.kind)) throw Error("Minigame indisponível.");
     p = player("Você");
     const bot = player("Rival", "brasa");
     p.money = bot.money = 300;
@@ -112,7 +111,7 @@ function handleAction(d, roomCode, r, save, realtimeSession) {
     r.players.push(bot);
     r.practiceBot = bot.id;
     r.practiceExpires = Date.now() + 30 * 60 * 1000;
-    startMinigame(r, () => kind);
+    startMinigame(r, d.kind);
     command(r, bot, "miniReady");
     save(r);
     return answer(200, {code, token:p.token});

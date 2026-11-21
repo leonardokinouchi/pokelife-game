@@ -71,7 +71,15 @@ test("concurrent joins keep both trainers in the cloud room", async t => {
   const entry = records.get(prefix + code);
   const room = deserialize(Buffer.from(entry.slice(36), "base64"));
   const {startMinigame, eligibleMinigames} = require("../game.cjs");
-  startMinigame(room, () => eligibleMinigames(room.players.length).indexOf("magnetic"));
+  for (const kind of ["market", "elements", "claim"]) {
+    assert.ok(!eligibleMinigames(2).includes(kind));
+    const response = await fetch(apiUrl, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({action:"practice", kind}),
+    });
+    assert.equal(response.status, 400);
+  }
+  startMinigame(room, "magnetic");
   records.set(prefix + code, entry.slice(0,36) + serialize(room).toString("base64"));
   const signal = (token, data = {}) => action({action:"peerSignal", code, token, round:room.round, kind:"magnetic", ...data});
   const nonce = "ab".repeat(12);

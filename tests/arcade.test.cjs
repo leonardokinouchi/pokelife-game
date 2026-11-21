@@ -1,13 +1,13 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const {player, newRoom, command, view, startMinigame, minigames} = require("../game.cjs");
+const {player, newRoom, command, view, startMinigame} = require("../game.cjs");
 const {advanceArcade, arcadeAction} = require("../arcade.cjs");
 
 function play(kind) {
   const players = [player("Ana"), player("Bia")];
   const room = newRoom("TEST1", players[0]);
   room.players = players;
-  startMinigame(room, () => minigames.indexOf(kind));
+  startMinigame(room, kind);
   assert.equal(room.arcade.start, null);
   for (const p of players) command(room, p, "miniReady");
   return {room, game:room.arcade, players};

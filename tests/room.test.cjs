@@ -527,6 +527,12 @@ test("capture command reports the roll independently of encounter state", () => 
   p.loc = "biome1";
   p.items["poke-ball"] = 1;
   p.items["ultra-ball"] = 1;
+  const lead = rules.makeMon("squirtle", 10);
+  const reserve = rules.makeMon("pidgey", 10);
+  p.party = [lead, reserve];
+  const originalXP = lead.xp + reserve.xp;
+  const expectedXP = Math.floor(rules.battleXP(lead, wild, r.mult) / 2);
+  const wildXP = wild.xp;
 
   p.enc = { type: "wild", wild };
   wild.hp = wild.maxhp;
@@ -537,11 +543,14 @@ test("capture command reports the roll independently of encounter state", () => 
     assert.deepEqual(command(r, p, "catch", { ball: "poke-ball" }), { caught: false });
     assert.equal(p.enc.wild, wild);
     assert.equal(p.shinyCaught, 0);
+    assert.equal(lead.xp + reserve.xp, originalXP);
 
     rules.capture = () => true;
     assert.deepEqual(command(r, p, "catch", { ball: "ultra-ball" }), { caught: true });
     assert.equal(p.enc, null);
     assert.ok(p.party.includes(wild));
+    assert.equal(lead.xp + reserve.xp, originalXP + expectedXP);
+    assert.equal(wild.xp, wildXP);
     assert.equal(view(r, p).players[0].shinyCaught, 1);
     assert.equal(view(r, p).players[0].points.shinys, 10);
   } finally {
@@ -704,7 +713,7 @@ test("auction shares the lot, validates each bid and charges the winner once", (
   const r = lobby(4);
   const [a, b, c, d] = r.players;
   a.money = b.money = 200;
-  startMinigame(r, () => 1);
+  startMinigame(r, "auction");
   for (const p of r.players) command(r, p, "miniReady");
   assert.equal(view(r, a).auction.pokemon.uid, view(r, b).auction.pokemon.uid);
   const bid = (p, amount, lot = 0) => command(r, p, "bid", {amount, lot});
@@ -742,7 +751,7 @@ test("the market and dark auction support rooms with zero balance or bids", () =
   const { startMinigame, advanceAuction } = require("../game.cjs");
   const r = lobby(2);
   const [a,b] = r.players;
-  startMinigame(r, () => 0);
+  startMinigame(r, "market");
   assert.throws(() => command(r, a, "quiz", {answer:0}));
   for (const p of r.players) command(r, p, "miniReady");
   assert.equal(view(r,a).minigame, "market");
@@ -750,7 +759,7 @@ test("the market and dark auction support rooms with zero balance or bids", () =
   command(r, b, "quiz", {answer:0});
   assert.equal(a.money, 180);
   assert.equal(b.money, 0);
-  startMinigame(r, () => 4);
+  startMinigame(r, "darkAuction");
   for (const p of r.players) command(r, p, "miniReady");
   assert.equal(view(r,a).auction.hidden, true);
   assert.equal(view(r,a).auction.pokemon.name, undefined);
@@ -782,7 +791,7 @@ test("auction lots scale with the room and unlock legendary and mythical Pokémo
 test("Pokémon quiz shares five distinct silhouettes and pays the top three", () => {
   const { startMinigame } = require("../game.cjs");
   const r = lobby(4);
-  startMinigame(r, () => 5);
+  startMinigame(r, "pokemonQuiz");
   const quiz = r.million;
   assert.equal(new Set(quiz.questions.map(q => q.silhouette.pokemonId)).size, 5);
   for (const p of r.players) command(r, p, "miniReady");
@@ -812,7 +821,7 @@ test("million quiz hides answers, rejects repeated submissions and pays the top 
   const { startMinigame } = require("../game.cjs");
   const { advanceMillion } = require("../million.cjs");
   const r = lobby(4);
-  startMinigame(r, () => 3);
+  startMinigame(r, "million");
   const quiz = r.million;
   assert.equal(new Set(quiz.questions.map(q => q.prompt)).size, 5);
   assert.equal(view(r, r.players[0]).million.question, null);
@@ -850,7 +859,7 @@ test("million quiz scores partial answers at the deadline and ranks faster finis
   const { advanceMillion, recordAnswer } = require("../million.cjs");
   const r = lobby(4);
   const [a, b, c, d] = r.players;
-  startMinigame(r, () => 3);
+  startMinigame(r, "million");
   for (const p of r.players) command(r, p, "miniReady");
   const quiz = r.million;
   for (const [index, q] of quiz.questions.entries()) {
@@ -867,7 +876,7 @@ test("survival race waits for readiness and resolves shared obstacles in server 
   const { startMinigame, advanceRace } = require("../game.cjs");
   const r = lobby(2);
   const [a, b] = r.players;
-  startMinigame(r, () => 2);
+  startMinigame(r, "race");
   command(r, a, "miniReady");
   assert.equal(r.race, undefined);
   command(r, a, "miniReady");
@@ -891,7 +900,7 @@ test("survival race waits for readiness and resolves shared obstacles in server 
 test("survival race narrows the dodge window and ends even if everyone survives", () => {
   const { startMinigame, advanceRace } = require("../game.cjs");
   const r = lobby(2);
-  startMinigame(r, () => 2);
+  startMinigame(r, "race");
   for (const p of r.players) command(r, p, "miniReady");
   const race = r.race;
   const first = race.obstacles[0];
@@ -916,7 +925,7 @@ test("the practice rival submits visible dodges and is eliminated if it stops do
   const r = lobby(2);
   const [human, bot] = r.players;
   r.practiceBot = bot.id;
-  startMinigame(r, () => 2);
+  startMinigame(r, "race");
   for (const p of r.players) command(r, p, "miniReady");
   const race = r.race;
   for (const [index, obstacle] of race.obstacles.slice(0, 5).entries()) {

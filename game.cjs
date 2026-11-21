@@ -5,7 +5,9 @@ const { isQuiz, newMillion, millionOptions, recordAnswer, advanceMillion, millio
 const { isPairMinigame, newPairGame, pairAction, pairView, practicePair } = require("./pair-minigames.cjs");
 const { arcadeGames, newArcade, beginArcade, arcadeAction, arcadeView } = require("./arcade.cjs");
 const minigames = ["market", "auction", "race", "million", "darkAuction", "pokemonQuiz", "wires", "guess", ...arcadeGames];
-const eligibleMinigames = count => minigames.filter(kind => !isPairMinigame(kind) || validPlayerCount(count));
+const archivedMinigames = new Set(["market", "elements", "claim"]);
+const eligibleMinigames = count => minigames.filter(kind =>
+  !archivedMinigames.has(kind) && (!isPairMinigame(kind) || validPlayerCount(count)));
 const isAuction = kind => kind === "auction" || kind === "darkAuction";
 const auctionDuration = 10000;
 const auctionRevealDuration = 1800;
@@ -394,6 +396,8 @@ function view(r, p) {
         .map(id => r.players.find(q => q.id === id).name).join(" e "),
       result: duel.result,
       won: duel.winners?.includes(p.id),
+      trainers: members.map((id, index) => ({id, side:"p" + (index + 1), ally:index % 2 === position % 2})),
+      commandVersion: duel.commandVersions?.[p.id] || 0,
       selection: duel.picks && !duel.battle && !duel.result ? {
         size: r.duelFormat.selected.size,
         leads: r.duelFormat.selected.mode === "doubles" ? 2 : 1,
@@ -522,10 +526,13 @@ function next(r) {
     beginRound(r);
   }
 }
-function startMinigame(r, roll = randomInt) {
+function startMinigame(r, kind) {
+  if (kind === undefined) {
+    const options = eligibleMinigames(r.players.length);
+    kind = options[randomInt(options.length)];
+  }
   r.phase = "minigame";
-  const options = eligibleMinigames(r.players.length);
-  r.minigame = options[roll(options.length)];
+  r.minigame = kind;
   r.miniReady = [];
   delete r.race;
   delete r.million;
@@ -872,11 +879,11 @@ function payout(r, d, winners) {
   }
   say(r, d.result);
 }
-function applyXP(r, p, target, activeUid) {
+function applyXP(r, p, target, activeUid, fraction = 1) {
   const recipients = p.party.filter(mon => mon.level < 100);
   const active = p.party.find(mon => mon.uid === activeUid) || p.party.find(mon => mon.hp > 0);
   if (!active || !recipients.length) return "";
-  const total = rules.battleXP(active, target, r.mult);
+  const total = Math.floor(rules.battleXP(active, target, r.mult) * fraction);
   const share = Math.floor(total / recipients.length);
   const remainder = total % recipients.length;
 
@@ -1426,9 +1433,10 @@ function execute(r, p, k, d = {}) {
       p.items[d.ball]--;
       const caught = rules.capture(e.wild, d.ball);
       if (caught) {
+        const xpNotice = applyXP(r, p, e.wild, e.battle?.view("p1").own?.uid, 0.5);
         deposit(p, e.wild);
         if (e.wild.shiny) p.shinyCaught = (p.shinyCaught || 0) + 1;
-        closeEncounter(p, e.wild.name + " capturado!");
+        closeEncounter(p, e.wild.name + " capturado!" + xpNotice);
       } else {
         p.notice = "O Pokémon escapou da bola.";
         if (e.battle) {
@@ -1515,6 +1523,14 @@ function execute(r, p, k, d = {}) {
   }
   if (phase === "duelos") {
     const t = duelFor(r, p);
+    if (k === "duelForfeit") {
+      check(t && !t.result, "Duelo indisponível.");
+      const members = duelMembers(t);
+      const side = members.indexOf(p.id) % 2;
+      payout(r, t, members.filter((_, index) => index % 2 !== side)
+        .map(id => r.players.find(q => q.id === id)));
+      return;
+    }
     if (t?.picks && !t.battle && !t.result) {
       selectDuelTeam(r, t, p, k, d.uids);
       return;
@@ -1522,7 +1538,11 @@ function execute(r, p, k, d = {}) {
     check(k === "fight" && t?.battle && !t.result, "Duelo indisponível.");
     const members = duelMembers(t);
     const side = "p" + (members.indexOf(p.id) + 1);
+    const version = t.commandVersions?.[p.id] || 0;
+    if (d.version !== undefined)
+      check(d.version === version && d.turn === t.battle.engine.turn, "O turno mudou. Escolha as ações novamente.");
     t.battle.choose(side, d.cmd);
+    (t.commandVersions ??= {})[p.id] = version + 1;
     const v = t.battle.view(side);
     if (v.ended) {
       const winningSide = v.winner ? (Number(v.winner.slice(1)) - 1) % 2 : -1;

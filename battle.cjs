@@ -291,37 +291,51 @@ class BattleSession {
     const reserve = side.pokemon.map((pm, index) => ({pm, index}))
       .filter(({pm}) => !pm.isActive && !pm.fainted);
     const switches = reserve.map(({pm, index}) => ({
-      command: "switch " + (index + 1), label: "Trocar para " + pm.name,
+      command: "switch " + (index + 1), label: pm.name, kind:"switch",
     }));
     return side.active.flatMap((pm, slot) => {
       if (req.forceSwitch) {
         if (!req.forceSwitch[slot]) return [{name:pm.name, options:[{command:"pass", label:"Sem troca"}]}];
         const canPass = reserve.length < req.forceSwitch.filter(Boolean).length;
-        return [{name:pm.name, options:canPass ? [...switches, {command:"pass", label:"Deixar espaço vazio"}] : switches}];
+        return [{name:pm.name, forced:true, options:canPass ? [...switches, {command:"pass", label:"Deixar espaço vazio"}] : switches}];
       }
       if (pm.fainted || pm.volatiles.commanding)
         return [{name:pm.name, options:[{command:"pass", label:"Sem ação"}]}];
       const active = req.active?.[slot];
       if (!active) return [];
       const moves = active.moves.flatMap((move, i) => {
-        if (move.disabled || move.pp === 0) return [{label:move.move + " · " + move.pp + "/" + move.maxpp + " PP", disabled:true}];
+        const {type, category, basePower, accuracy, shortDesc} = Dex.moves.get(move.id);
+        const details = {name:move.move, type, category, basePower, accuracy, shortDesc, pp:move.pp, maxpp:move.maxpp};
+        if (move.disabled || move.pp === 0) return [{...details, label:move.move, disabled:true}];
         const base = "move " + (i + 1);
         const targetType = move.target || Dex.moves.get(move.id).target;
         const needsTarget = this.engine.actions.targetTypeChoices(targetType);
         const valid = this.engine.sides.flatMap(s => s.active).filter(target =>
           target && this.engine.validTarget(target, pm, targetType));
         const available = valid.filter(target => !target.fainted);
+        const affected = this.engine.sides.flatMap(s => s.active).filter(other => {
+          if (!other || other.fainted) return false;
+          if (other === pm) return targetType === "self";
+          if (targetType === "all") return true;
+          if (!pm.isAdjacent(other)) return false;
+          return targetType === "allAdjacent" ||
+            (targetType === "allAdjacentFoes" && other.side.n % 2 !== side.n % 2);
+        }).map(other => this.roster.get(other)?.uid).filter(Boolean);
         const targets = needsTarget && valid.length ? (available.length ? available : valid) : [null];
         return targets.flatMap(target => {
           const command = base + (target ? " " + pm.getLocOf(target) : "");
           const label = move.move + (target ? " → " + target.name +
             (target.side.n % 2 === side.n % 2 ? " (aliado)" : " (rival)") : "");
-          const choice = {command, label};
-          return active.canMegaEvo ? [choice, {command:command + " mega", label:label + " · Mega"}] : [choice];
+          const choice = {...details, command, label, moveKey:base,
+            target:target ? {uid:this.roster.get(target)?.uid, name:target.name,
+              ally:target.side.n % 2 === side.n % 2} : null,
+            affected};
+          return active.canMegaEvo ? [choice, {...choice, command:command + " mega",
+            moveKey:base + " mega", name:move.move + " · Mega", label:label + " · Mega"}] : [choice];
         });
       });
       for (const move of exhaustedSlots(pm, active))
-        moves.push({label:move.move + " · 0/" + move.maxpp + " PP", disabled:true});
+        moves.push({name:move.move, label:move.move, pp:0, maxpp:move.maxpp, disabled:true});
       return [{name:pm.name, options:active.trapped ? moves : [...moves, ...switches]}];
     });
   }
@@ -434,9 +448,14 @@ class BattleSession {
       foe: describe(foeSide.active[0]),
       ownActive: activePokemon(ownSide),
       foeActive: activePokemon(foeSide),
+      arenaSlots: this.engine.gameType === "singles" ? null : [foeSide, ownSide].map(side =>
+        [side, side.allySide].filter(Boolean).flatMap(member => member.active.map(describe))),
       groups,
+      readySides: this.engine.sides.filter(side => !side.activeRequest || side.activeRequest.wait || side.isChoiceDone())
+        .map(side => side.id),
       choices,
-      log: log.slice(-20),
+      log,
+      logCount: log.length,
     };
   }
 }

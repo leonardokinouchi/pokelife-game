@@ -135,10 +135,14 @@ test("double battles require a legal move and target for each active Pokémon", 
   assert.equal(view.foeActive.length, 2);
   assert.equal(view.groups.length, 2);
   assert.ok(view.groups[0].options.some(c => c.command === "move 1 2"));
+  assert.deepEqual(view.groups[0].options.map(c => [c.target.name, c.target.ally]).sort(),
+    [["Bulbasaur", true], ["Rattata", false], ["Squirtle", false]]);
+  assert.equal(view.groups[1].options[0].target, null);
   assert.throws(() => battle.choose("p1", "move 1 9, move 1"));
   assert.throws(() => battle.choose("p1", "move 1 2"));
   battle.choose("p1", "move 1 2, move 1");
   assert.equal(battle.view("p1").waiting, true);
+  assert.ok(battle.view("p2").readySides.includes("p1"));
   battle.choose("p2", "move 1 1, move 1");
   assert.ok(battle.view("p1").turn > view.turn);
 });
@@ -163,4 +167,17 @@ test("multi battles give four trainers their own commands and survive save/resto
   battle.choose("p3", "move 1 -1");
   battle.choose("p4", "move 1");
   assert.ok(battle.view("p4").turn > initial.turn);
+});
+
+test("Earthquake shows both rivals and the adjacent ally as affected", () => {
+  const battle = new BattleSession({
+    mode: "doubles",
+    p1: [pokemon("Pikachu", ["earthquake"]), pokemon("Bulbasaur", ["protect"])],
+    p2: [pokemon("Rattata", ["tackle"]), pokemon("Squirtle", ["protect"])],
+    seed,
+  });
+  const view = battle.view("p1");
+  const earthquake = view.groups[0].options.find(choice => choice.name === "Earthquake");
+  assert.deepEqual(earthquake.affected.sort(), [view.ownActive[1].uid, ...view.foeActive.map(mon => mon.uid)].sort());
+  assert.equal(earthquake.target, null);
 });

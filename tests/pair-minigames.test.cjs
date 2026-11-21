@@ -7,7 +7,7 @@ function play(kind, count = 4) {
   const players = Array.from({length:count}, (_, i) => player("Treinador " + (i + 1)));
   const room = newRoom("TEST1", players[0]);
   room.players = players;
-  startMinigame(room, () => eligibleMinigames(count).indexOf(kind));
+  startMinigame(room, kind);
   for (const p of players) command(room, p, "miniReady");
   return room;
 }
