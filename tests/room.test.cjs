@@ -408,6 +408,8 @@ test("dusk expedition rewards only a completed dusk exploration and pays once", 
     const before = a.items["poke-ball"];
     command(r, a, "fight", { cmd: "move 1" });
     assert.equal(a.items["poke-ball"], before + 1);
+    for (let lesson; (lesson = view(r, a).you.moveLesson); )
+      command(r, a, "resolveMove", { uid: lesson.uid, move: lesson.move, replace: null });
   }
 });
 
