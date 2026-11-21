@@ -49,7 +49,7 @@ test("concurrent joins keep both trainers in the cloud room", async t => {
   const host = await action({action:"create", name:"Ana"});
   const code = host.state.code;
   synchronize = true;
-  await Promise.all(["Bia", "Caio"].map(name => action({action:"join", code, name})));
+  const [guest, other] = await Promise.all(["Bia", "Caio"].map(name => action({action:"join", code, name})));
   const {state} = await action({action:"state", code, token:host.token});
   assert.deepEqual(state.players.map(p => p.name).sort(), ["Ana", "Bia", "Caio"]);
   assert.equal(conflicts, 1);
@@ -66,19 +66,22 @@ test("concurrent joins keep both trainers in the cloud room", async t => {
   const postOffer = () => fetch(apiUrl, {
     method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(offer),
   });
-  const previousOrigin = process.env.AURORA_RTC_ORIGIN;
-  delete process.env.AURORA_RTC_ORIGIN;
-  t.after(() => {
-    if (previousOrigin === undefined) delete process.env.AURORA_RTC_ORIGIN;
-    else process.env.AURORA_RTC_ORIGIN = previousOrigin;
-  });
-  assert.equal((await postOffer()).status, 503);
-  process.env.AURORA_RTC_ORIGIN = "https://rtc.example.test";
-  const realFetch = globalThis.fetch;
-  t.mock.method(globalThis, "fetch", (url, options) => {
-    if (String(url) !== "https://rtc.example.test/api") return realFetch(url, options);
-    assert.deepEqual(JSON.parse(options.body), offer);
-    return Promise.resolve(Response.json({answer:{type:"answer",sdp:"test-answer"}}));
-  });
-  assert.deepEqual(await (await postOffer()).json(), {answer:{type:"answer",sdp:"test-answer"}});
+  assert.equal((await postOffer()).status, 410);
+  const {serialize, deserialize} = require("node:v8");
+  const entry = records.get(prefix + code);
+  const room = deserialize(Buffer.from(entry.slice(36), "base64"));
+  const {startMinigame, eligibleMinigames} = require("../game.cjs");
+  startMinigame(room, () => eligibleMinigames(room.players.length).indexOf("magnetic"));
+  records.set(prefix + code, entry.slice(0,36) + serialize(room).toString("base64"));
+  const signal = (token, data = {}) => action({action:"peerSignal", code, token, round:room.round, kind:"magnetic", ...data});
+  const nonce = "ab".repeat(12);
+  const guestOffer = {type:"offer", sdp:"guest-offer"};
+  await signal(guest.token, {nonce, description:guestOffer});
+  const {links} = await signal(host.token);
+  const guestId = guest.state.you.id;
+  assert.deepEqual(links[guestId], {nonce, offer:guestOffer});
+  assert.deepEqual(await signal(other.token), {link:null});
+  const description = {type:"answer", sdp:"host-answer"};
+  await signal(host.token, {target:guestId, nonce, description});
+  assert.deepEqual((await signal(guest.token)).link.answer, description);
 });

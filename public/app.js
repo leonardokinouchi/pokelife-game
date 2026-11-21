@@ -66,80 +66,160 @@ function syncClock(clock, sentAt) {
 }
 
 const realtimeKinds = new Set(["magnetic", "race", "rhythm", "sorter"]);
-const realtimeActions = new Set(["arcadeMove", "arcadeTap", "dodge"]);
-let realtime;
-let realtimeKey;
-let realtimeId = 0;
+const peerVisuals = new Map();
+let peerRoom;
 
-function closeRealtime(link) {
-  if (realtime !== link) return;
-  realtime = null;
-  link.peer.close();
-  for (const pending of link.pending.values()) {
-    clearTimeout(pending.timer);
-    pending.resolve(null);
-  }
-  link.pending.clear();
-}
-
-async function connectRealtime(s) {
-  const kind = s.minigame;
-  const key = session && realtimeKinds.has(kind) ? session.code + ":" + s.round + ":" + kind : null;
-  if (key === realtimeKey) return;
-  if (realtime) closeRealtime(realtime);
-  realtimeKey = key;
-  if (!key || !window.RTCPeerConnection) return;
-  let link;
-  try {
-    const peer = new RTCPeerConnection({
-      iceServers:location.protocol === "https:" ? [{urls:"stun:stun.l.google.com:19302"}] : [],
-    });
-    const channel = peer.createDataChannel("aurora");
-    link = realtime = {peer, channel, pending:new Map()};
-    channel.onclose = () => closeRealtime(link);
-    peer.onconnectionstatechange = () => {
-      if (["failed", "disconnected"].includes(peer.connectionState)) closeRealtime(link);
-    };
-    channel.onmessage = event => {
-      const packet = JSON.parse(event.data);
-      const pending = link.pending.get(packet.id);
-      if (!pending) return;
-      clearTimeout(pending.timer);
-      link.pending.delete(packet.id);
-      syncClock(packet.clock, pending.sentAt);
-      pending.resolve(packet);
-    };
-    await peer.setLocalDescription(await peer.createOffer());
-    if (peer.iceGatheringState !== "complete") await new Promise(resolve => {
-      const timer = setTimeout(resolve, 1800);
-      peer.addEventListener("icegatheringstatechange", () => {
-        if (peer.iceGatheringState === "complete") { clearTimeout(timer); resolve(); }
-      });
-    });
-    if (realtime !== link) return;
-    const response = await fetch("/api", {
-      method:"POST", headers:{"Content-Type":"application/json"}, signal:AbortSignal.timeout(5500),
-      body:JSON.stringify({...session, action:"rtcOffer", round:s.round, kind, offer:peer.localDescription}),
-    });
-    if (!response.ok) throw Error("WebRTC indisponível");
-    await peer.setRemoteDescription((await response.json()).answer);
-    setTimeout(() => {
-      if (channel.readyState !== "open") closeRealtime(link);
-    }, 8000);
-  } catch {
-    if (link) closeRealtime(link);
-  }
-}
-
-function sendRealtime(payload) {
-  const link = realtime;
-  const id = ++realtimeId;
+function gatherPeerIce(peer) {
+  if (peer.iceGatheringState === "complete") return Promise.resolve();
   return new Promise(resolve => {
-    const timer = setTimeout(() => closeRealtime(link), 4000);
-    link.pending.set(id, {resolve, timer, sentAt:Date.now()});
-    try { link.channel.send(JSON.stringify({...payload, id})); }
-    catch { closeRealtime(link); }
+    function finish() {
+      clearTimeout(timer);
+      peer.removeEventListener("icegatheringstatechange", changed);
+      resolve();
+    }
+    function changed() { if (peer.iceGatheringState === "complete") finish(); }
+    const timer = setTimeout(finish, 2500);
+    peer.addEventListener("icegatheringstatechange", changed);
   });
+}
+
+async function peerSignal(room, data = {}) {
+  const response = await fetch("/api", {
+    method:"POST", headers:{"Content-Type":"application/json"}, signal:AbortSignal.timeout(6000),
+    body:JSON.stringify({...room.session, action:"peerSignal", round:room.round, kind:room.kind, ...data}),
+  });
+  if (!response.ok) throw Error("Sinalização indisponível.");
+  return response.json();
+}
+
+function relayVisual(room, id, data, except) {
+  const message = JSON.stringify({id, ...data});
+  for (const [target, link] of room.links)
+    if (target !== except && link.channel?.readyState === "open" && link.channel.bufferedAmount < 8192)
+      link.channel.send(message);
+}
+
+function attachPeerChannel(room, id, link, channel) {
+  if (channel.label !== "aurora-live") { channel.close(); return; }
+  link.channel = channel;
+  channel.onmessage = ({data}) => {
+    if (peerRoom !== room || typeof data !== "string" || data.length > 240) return;
+    let packet;
+    try { packet = JSON.parse(data); } catch { return; }
+    if (!packet || typeof packet !== "object") return;
+    const actor = room.isHost ? id : packet.id;
+    if (actor === room.you || !state?.players.some(p => p.id === actor)) return;
+    if (!Number.isSafeInteger(packet.seq) || packet.seq <= (room.received.get(actor) ?? 0)) return;
+    const visual = {seq:packet.seq};
+    if (room.kind === "magnetic" && Number.isInteger(packet.cell) && packet.cell >= 0 && packet.cell < 25)
+      visual.cell = packet.cell;
+    else if (room.kind === "race" && ["jump","duck"].includes(packet.pose)) visual.pose = packet.pose;
+    else if (["rhythm","sorter"].includes(room.kind) && Number.isInteger(packet.lane) &&
+        packet.lane >= 0 && packet.lane < (room.kind === "rhythm" ? 4 : 3)) visual.lane = packet.lane;
+    else return;
+    room.received.set(actor, packet.seq);
+    peerVisuals.set(actor, {...visual, at:Date.now() + serverOffset});
+    if (room.isHost) relayVisual(room, actor, visual, actor);
+  };
+}
+
+function createPeerLink(room, id, nonce) {
+  room.links.get(id)?.peer.close();
+  room.received.delete(id);
+  const peer = new RTCPeerConnection({iceServers:[{urls:"stun:stun.l.google.com:19302"}]});
+  const link = {peer, nonce};
+  room.links.set(id, link);
+  return link;
+}
+
+async function answerPeer(room, id, signal) {
+  const link = createPeerLink(room, id, signal.nonce);
+  const peer = link.peer;
+  peer.ondatachannel = ({channel}) => attachPeerChannel(room, id, link, channel);
+  try {
+    await peer.setRemoteDescription(signal.offer);
+    await peer.setLocalDescription(await peer.createAnswer());
+    await gatherPeerIce(peer);
+    if (peerRoom === room && room.links.get(id) === link)
+      await peerSignal(room, {target:id, nonce:link.nonce, description:peer.localDescription});
+  } catch {
+    peer.close();
+    if (room.links.get(id) === link) room.links.delete(id);
+  }
+}
+
+async function refreshPeers(room) {
+  if (peerRoom !== room) return;
+  try {
+    if (room.isHost) {
+      const {links} = await peerSignal(room);
+      if (peerRoom !== room) return;
+      await Promise.all(Object.entries(links).filter(([id, signal]) =>
+        room.links.get(id)?.nonce !== signal.nonce).map(([id, signal]) => answerPeer(room, id, signal)));
+    } else {
+      let link = room.links.get(room.host);
+      if (!link || ["closed","failed"].includes(link.peer.connectionState) ||
+          (link.channel.readyState !== "open" && Date.now() - link.started > 18000)) {
+        const nonce = Array.from(crypto.getRandomValues(new Uint8Array(12)), b => b.toString(16).padStart(2,"0")).join("");
+        link = createPeerLink(room, room.host, nonce);
+        link.started = Date.now();
+        const peer = link.peer;
+        attachPeerChannel(room, room.host, link, peer.createDataChannel("aurora-live", {ordered:false, maxRetransmits:0}));
+        try {
+          await peer.setLocalDescription(await peer.createOffer());
+          await gatherPeerIce(peer);
+          if (peerRoom !== room) return;
+          await peerSignal(room, {nonce, description:peer.localDescription});
+        } catch (error) { peer.close(); throw error; }
+      } else if (!link.peer.remoteDescription) {
+        const {link:signal} = await peerSignal(room);
+        if (peerRoom === room && signal?.nonce === link.nonce && signal.answer)
+          await link.peer.setRemoteDescription(signal.answer);
+      }
+    }
+  } catch {
+    // The game state and the official inputs still use the regular API.
+  } finally {
+    if (peerRoom === room) setTimeout(() => refreshPeers(room), room.isHost ? 850 : 700);
+  }
+}
+
+function connectRealtime(s) {
+  const key = session && !practiceMode && s.host && s.phase === "minigame" &&
+    realtimeKinds.has(s.minigame) && !s.race?.winners && !s.arcade?.results &&
+    window.RTCPeerConnection ? session.code + ":" + s.round + ":" + s.minigame : null;
+  if ((peerRoom?.key ?? null) === key) return;
+  const previous = peerRoom;
+  peerRoom = null;
+  if (previous) for (const link of previous.links.values()) link.peer.close();
+  peerVisuals.clear();
+  if (!key) return;
+  const room = peerRoom = {key, session:{...session}, round:s.round, kind:s.minigame, host:s.host,
+    you:s.you.id, isHost:s.host === s.you.id, links:new Map(), received:new Map(), seq:0};
+  refreshPeers(room);
+}
+
+function predictReflex(action, data) {
+  const s = state;
+  if (s?.phase !== "minigame" || !realtimeKinds.has(s.minigame)) return;
+  const now = Date.now() + serverOffset;
+  const last = peerVisuals.get(s.you.id);
+  let visual;
+  if (action === "arcadeMove" && s.arcade?.you.alive && !s.arcade.results && now < s.arcade.deadline) {
+    const delta = {up:-5, down:5, left:-1, right:1}[data.direction];
+    const cell = last?.cell != null && now - last.at < 240 ? last.cell : s.arcade.you.cell;
+    const next = cell + delta;
+    if (!Number.isInteger(next) || next < 0 || next >= 25 || (Math.abs(delta) === 1 &&
+        Math.floor(next / 5) !== Math.floor(cell / 5))) return;
+    visual = {cell:next};
+  } else if (action === "dodge" && s.race?.runners[s.you.id]?.alive && !s.race.winners && now >= s.race.startsAt) {
+    visual = {pose:data.pose};
+  } else if (action === "arcadeTap" && s.arcade?.start <= now && now < s.arcade?.deadline) {
+    visual = {lane:data.lane};
+  }
+  if (!visual) return;
+  peerVisuals.set(s.you.id, {...visual, at:now});
+  if (peerRoom) relayVisual(peerRoom, s.you.id, {...visual, seq:++peerRoom.seq});
 }
 
 async function request(payload) {
@@ -339,14 +419,8 @@ $("evolutionScene").oncancel = (event) => {
 };
 
 async function act(action, data = {}) {
-  if (realtime?.channel.readyState === "open" && realtimeActions.has(action)) {
-    const issued = ++sequence;
-    const out = await sendRealtime({action, ...data});
-    if (sequence === issued && out?.state) setState(out.state);
-    if (out?.error) toast(out.error);
-    return;
-  }
   if (busy) return;
+  predictReflex(action, data);
   busy = true;
   sequence++;
   try {
@@ -391,8 +465,7 @@ async function poll() {
   polling = true;
   const issued = sequence;
   try {
-    const out = realtime?.channel.readyState === "open" ?
-      await sendRealtime({action:"state"}) : await request({action:"state"});
+    const out = await request({action:"state"});
     if (sequence === issued && !busy && out?.state) setState(out.state);
   } catch (e) {
     toast(e.message);
@@ -1643,8 +1716,10 @@ function animateRace() {
     const runner = race.runners[lane.dataset.runner];
     const fallen = !runner.alive;
     lane.classList.toggle("eliminated", fallen);
-    const pose = fallen ? "fall" : runner.poseUntil > now ? runner.pose : "";
-    const stamp = fallen ? runner.eliminatedAt : runner.poseAt;
+    const predicted = peerVisuals.get(lane.dataset.runner);
+    const showPrediction = predicted?.pose && now - predicted.at < 360;
+    const pose = fallen ? "fall" : showPrediction ? predicted.pose : runner.poseUntil > now ? runner.pose : "";
+    const stamp = fallen ? runner.eliminatedAt : showPrediction ? predicted.at : runner.poseAt;
     if (lane.dataset.pose !== pose || lane.dataset.poseStamp !== String(stamp)) {
       lane.style.setProperty("--pose-delay", -Math.max(0, now - (stamp || now)) + "ms");
       lane.dataset.pose = pose;
@@ -2101,6 +2176,13 @@ function animateKeyboardArcade(stage, initial) {
     if (!stage.isConnected || state?.phase !== "minigame" || game?.start !== start || game.results) return;
     const now = Date.now() + serverOffset;
     const elapsed = now - start;
+    for (const [index, button] of controls.entries()) {
+      const pressed = game.players.some(p => {
+        const visual = peerVisuals.get(p.id);
+        return visual?.lane === index && now - visual.at < 160;
+      });
+      button.classList.toggle("arcade-key-pressed", pressed);
+    }
     const starting = elapsed < 0;
     const number = starting ? String(Math.min(3, Math.ceil(-elapsed / 1000))) : "";
     if (countdown.textContent !== number) countdown.textContent = number;
@@ -2135,10 +2217,12 @@ function animateKeyboardArcade(stage, initial) {
       for (const p of game.players) {
         const figure = figures.get(p.id);
         figure.classList.toggle("arcade-eliminated", !p.alive);
-        if (figure.dataset.cell !== String(p.cell)) {
-          figure.style.left = (p.cell % 5 * 20 + 10) + "%";
-          figure.style.top = (Math.floor(p.cell / 5) * 20 + 10) + "%";
-          figure.dataset.cell = p.cell;
+        const predicted = peerVisuals.get(p.id);
+        const cell = predicted?.cell != null && now - predicted.at < 240 ? predicted.cell : p.cell;
+        if (figure.dataset.cell !== String(cell)) {
+          figure.style.left = (cell % 5 * 20 + 10) + "%";
+          figure.style.top = (Math.floor(cell / 5) * 20 + 10) + "%";
+          figure.dataset.cell = cell;
         }
         figure.classList.toggle("arcade-self", p.id === state.you.id);
       }

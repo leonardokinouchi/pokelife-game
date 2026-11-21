@@ -144,6 +144,28 @@ function handleAction(d, roomCode, r, save, realtimeSession) {
   }
   p = r?.players.find((x) => x.token === d.token);
   if (!p) return answer(403, { error: "Sessão expirada." });
+  if (d.action === "peerSignal") {
+    if (r.practiceBot || r.phase !== "minigame" || d.round !== r.round || d.kind !== r.minigame ||
+        !["magnetic", "race", "rhythm", "sorter"].includes(d.kind))
+      return answer(409, {error:"Sinalização indisponível nesta rodada."});
+    if (r.peerSignals?.round !== r.round || r.peerSignals.kind !== r.minigame)
+      r.peerSignals = {round:r.round, kind:r.minigame, links:{}};
+    const {links} = r.peerSignals;
+    const host = p.id === r.host;
+    if (d.description) {
+      const target = host ? d.target : p.id;
+      const type = host ? "answer" : "offer";
+      if (!r.players.some(q => q.id === target && q.id !== r.host) ||
+          d.description.type !== type || typeof d.description.sdp !== "string" ||
+          d.description.sdp.length > 24000 || typeof d.nonce !== "string" || !/^[a-f0-9]{24}$/.test(d.nonce))
+        return answer(400, {error:"Descrição WebRTC inválida."});
+      if (host && links[target]?.nonce !== d.nonce) return answer(409, {error:"Oferta substituída."});
+      if (!host) links[target] = {nonce:d.nonce, offer:d.description};
+      else links[target].answer = d.description;
+      save(r);
+    }
+    return answer(200, host ? {links} : {link:links[p.id] ?? null});
+  }
   if (d.action === "leave" && r.phase === "lobby") {
     r.players = r.players.filter((q) => q !== p);
     if (r.players.length && r.host === p.id) r.host = r.players[0].id;
@@ -214,25 +236,6 @@ const realtime = require("./realtime.cjs").createRealtime(async code => {
   return entry && unpack(entry.data);
 }, processRequest);
 
-async function relayRtcOffer(d) {
-  const configured = process.env.AURORA_RTC_ORIGIN;
-  if (!configured) return answer(503, {error:"Servidor WebRTC indisponível."});
-  const origin = new URL(configured);
-  if (origin.protocol !== "https:") return answer(503, {error:"O servidor WebRTC precisa usar HTTPS."});
-  try {
-    const response = await fetch(new URL("/api", origin), {
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify(d),
-      redirect:"error",
-      signal:AbortSignal.timeout(4500),
-    });
-    return answer(response.status, await response.json());
-  } catch {
-    return answer(503, {error:"Servidor WebRTC indisponível."});
-  }
-}
-
 async function handleRequest(req, res) {
   try {
     const { pathname, searchParams } = new URL(req.url, "http://localhost");
@@ -275,10 +278,8 @@ async function handleRequest(req, res) {
       if (d.action === "rtcOffer") {
         if (process.env.AURORA_DISABLE_RTC === "1")
           return reply(res, 503, {error:"Transporte em tempo real indisponível."});
-        if (process.env.VERCEL) {
-          const result = await relayRtcOffer(d);
-          return reply(res, result.status, result.value);
-        }
+        if (process.env.VERCEL)
+          return reply(res, 410, {error:"Use a sinalização com o anfitrião."});
         return reply(res, 200, await realtime(d));
       }
       const result = await processRequest(d);

@@ -17,11 +17,7 @@ Escolha um personagem disponível no lobby e marque **Estou pronto**. Cada perso
 
 ## Publicação na Vercel
 
-Campo Magnético, Corrida de sobrevivência, Ritmo do Toxtricity e Esteira da Pokébola usam WebRTC quando o canal está disponível. Se a conexão falhar, o navegador continua na mesma sala pela API HTTP.
-
-Para habilitar WebRTC no site da Vercel, execute `node server.cjs` em um host Node persistente com um endpoint HTTPS e conectividade ICE. No host, configure `AURORA_RTC_COMPANION=1`, o mesmo Redis da Vercel e `VERCEL_ENV=production` para ler e gravar as mesmas salas. Use a mesma revisão do código nos dois hosts. Configure `AURORA_RTC_ORIGIN` na Vercel com a origem HTTPS do host e faça um deploy. A Vercel encaminha a oferta de sinalização, e o navegador abre o DataChannel com o host. Sem essa configuração, o jogo usa HTTP.
-
-Para conexões externas, configure `AURORA_ICE_SERVERS` com um array JSON de servidores ICE no host e teste com jogadores em redes diferentes. `AURORA_DISABLE_RTC=1` força o transporte HTTP.
+Nos minigames de reflexo multiplayer, os navegadores negociam o WebRTC pela API e trocam prévias de jogadas diretamente com o navegador anfitrião. A API confirma comandos, colisões e resultados. O modo de treino e as redes onde a conexão direta falha continuam usando HTTP. A configuração atual usa STUN para descobrir rotas diretas.
 
 Importe o repositório na Vercel com a pasta raiz `.`, preset **Other**, Node.js **24.x** e branch de produção `main`. O arquivo `vercel.json` define a região São Paulo (`gru1`), as rotas e o build. Cada push na branch de produção executa os testes antes da publicação.
 

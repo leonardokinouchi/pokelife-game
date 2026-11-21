@@ -4032,6 +4032,10 @@ body:has(#finalScoreboard:not([hidden])) .system { z-index: 36; }
 }
 .arcade-feedback[data-hit="true"] { color:#a8f6c5; }
 .arcade-feedback.visible { opacity:1; transform:none; }
+#minigameScreen .arcade-keys button.arcade-key-pressed {
+  border-color:var(--arcade-accent);
+  box-shadow:0 0 10px color-mix(in srgb,var(--arcade-accent) 45%,transparent);
+}
 .arcade-grid { border:1px solid #62dbd474; border-radius:10px; background:#071b29; box-shadow:0 0 22px #55e9dd26; }
 .arcade-grid > i {
   background:radial-gradient(circle at 50% 35%,#346677,#193649 80%);
