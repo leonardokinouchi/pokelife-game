@@ -213,7 +213,7 @@
       if (description.textContent) hint.append(description);
     }
     const visitors = occupants.filter(player => player.loc === site.id).length;
-    const status = [reachable.includes(site.id) ? "Viajar · 1 ação" : "",
+    const status = [reachable.includes(site.id) ? "Viajar" : "",
       visitors ? visitors + " em visita" : ""].filter(Boolean).join(" · ");
     if (status) {
       const note = document.createElement("small");

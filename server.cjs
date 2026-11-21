@@ -16,7 +16,8 @@ const { createHash } = require("node:crypto");
 const storage = path.join(process.env.LOCALAPPDATA || require("node:os").homedir(),
   "ExpedicaoAurora", createHash("sha256").update(__dirname).digest("hex").slice(0, 12),
   String(Number(process.env.PORT || 4173)));
-if (!process.env.VERCEL) fs.mkdirSync(storage, { recursive: true });
+const cloudRooms = Boolean(process.env.VERCEL || process.env.AURORA_RTC_COMPANION === "1");
+if (!cloudRooms) fs.mkdirSync(storage, { recursive: true });
 const savePath = code => path.join(storage, code + ".sav");
 
 function pack(room) {
@@ -48,6 +49,10 @@ function loadRoom(code) {
 }
 function unpack(buffer) {
   const room = deserialize(buffer);
+  if (room.phase === "resumo") {
+    room.phase = "trocas";
+    for (const p of room.players) p.done = false;
+  }
   if (room.phase === "lobby") {
     const reserved = new Set(room.players.map(p => p.avatar));
     const available = Object.keys(avatars).filter(avatar => !reserved.has(avatar));
@@ -90,7 +95,10 @@ function reply(res, status, value) {
 }
 function answer(status, value) { return { status, value }; }
 
-function handleAction(d, roomCode, r, save) {
+function handleAction(d, roomCode, r, save, realtimeSession) {
+  if (realtimeSession && (r?.phase !== "minigame" || r.round !== realtimeSession.round ||
+      r.minigame !== realtimeSession.kind))
+    return answer(409, {error:"Sessão em tempo real encerrada."});
   let p;
   if (d.action === "practice") {
     const kind = minigames.indexOf(d.kind);
@@ -161,19 +169,19 @@ function newCode(action) {
   return Array.from({ length: 5 }, () => alphabet[randomInt(alphabet.length)]).join("");
 }
 
-async function processRequest(d) {
+async function processRequest(d, realtimeSession) {
   const creating = d.action === "create" || d.action === "practice";
   if (!creating && (typeof d.code !== "string" || !/^(?:[A-Z2-9]{5}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/.test(d.code)))
     return answer(403, { error: "Sessão expirada." });
   for (let attempt = 0; attempt < 12; attempt++) {
     const code = creating ? newCode(d.action) : d.code;
-    if (process.env.VERCEL) {
+    if (cloudRooms) {
       const { read, commit } = require("./cloud-rooms.cjs");
       const entry = await read(code);
       if (creating && entry) continue;
       let dirty = false, updated;
       const room = entry && unpack(entry.data);
-      const result = handleAction(d, code, room, value => { dirty = true; updated = value; });
+      const result = handleAction(d, code, room, value => { dirty = true; updated = value; }, realtimeSession);
       if (!dirty || await commit(code, entry?.version || "", updated ? pack(updated) : null, updated?.practiceExpires))
         return result;
       continue;
@@ -193,9 +201,35 @@ async function processRequest(d) {
         rooms.delete(code);
         fs.rmSync(savePath(code), { force: true });
       }
-    });
+    }, realtimeSession);
   }
   return answer(409, { error: "Sala ocupada. Tente a ação novamente." });
+}
+
+const realtime = require("./realtime.cjs").createRealtime(async code => {
+  if (!cloudRooms) return loadRoom(code);
+  if (!/^(?:[A-Z2-9]{5}|[a-f0-9-]{36})$/.test(code)) return null;
+  const entry = await require("./cloud-rooms.cjs").read(code);
+  return entry && unpack(entry.data);
+}, processRequest);
+
+async function relayRtcOffer(d) {
+  const configured = process.env.AURORA_RTC_ORIGIN;
+  if (!configured) return answer(503, {error:"Servidor WebRTC indisponível."});
+  const origin = new URL(configured);
+  if (origin.protocol !== "https:") return answer(503, {error:"O servidor WebRTC precisa usar HTTPS."});
+  try {
+    const response = await fetch(new URL("/api", origin), {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(d),
+      redirect:"error",
+      signal:AbortSignal.timeout(4500),
+    });
+    return answer(response.status, await response.json());
+  } catch {
+    return answer(503, {error:"Servidor WebRTC indisponível."});
+  }
 }
 
 async function handleRequest(req, res) {
@@ -236,6 +270,15 @@ async function handleRequest(req, res) {
       }
       const input = req.body ?? body;
       const d = typeof input === "string" || Buffer.isBuffer(input) ? JSON.parse(input) : input;
+      if (d.action === "rtcOffer") {
+        if (process.env.AURORA_DISABLE_RTC === "1")
+          return reply(res, 503, {error:"Transporte em tempo real indisponível."});
+        if (process.env.VERCEL) {
+          const result = await relayRtcOffer(d);
+          return reply(res, result.status, result.value);
+        }
+        return reply(res, 200, await realtime(d));
+      }
       const result = await processRequest(d);
       return reply(res, result.status, result.value);
     }

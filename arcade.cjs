@@ -4,7 +4,7 @@ const keyboardGames = ["magnetic", "rhythm", "sorter"];
 const cardGames = ["elements", "twentyOne", "claim"];
 const arcadeGames = [...keyboardGames, ...cardGames];
 const durations = {magnetic:50000, rhythm:46000, sorter:45000};
-const cardDuration = {elements:9000, twentyOne:6500, claim:8500};
+const cardDuration = {elements:9000, twentyOne:12000, claim:8500};
 const types = ["Fogo", "Água", "Planta"];
 const beats = [2, 0, 1];
 const gridSize = 5;
@@ -64,8 +64,9 @@ function newArcade(room) {
 
 function beginArcade(room, now = Date.now()) {
   const game = room.arcade;
-  game.start = now;
-  game.deadline = now + (durations[room.minigame] ?? cardDuration[room.minigame]);
+  const kind = room.minigame;
+  game.start = now + (kind === "rhythm" || kind === "sorter" ? 3000 : 0);
+  game.deadline = game.start + (durations[kind] ?? cardDuration[kind]);
 }
 
 function handValue(hand) {
@@ -220,6 +221,7 @@ function arcadeAction(room, player, action, data, now = Date.now()) {
   const p = game.players[player.id];
   if (game.start == null || game.results || game.revealUntil !== null || now >= game.deadline)
     throw Error("Essa etapa já terminou.");
+  if (now < game.start) throw Error("Aguarde a contagem regressiva.");
   if (kind === "magnetic" && action === "arcadeMove") {
     const delta = {up:[0,-1], down:[0,1], left:[-1,0], right:[1,0]}[data.direction];
     if (!Array.isArray(delta) || !p.alive) throw Error("Movimento indisponível.");

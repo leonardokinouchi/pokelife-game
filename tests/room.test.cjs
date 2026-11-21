@@ -55,7 +55,7 @@ test("economy respects action budgets, place, ownership and failed purchases", (
   assert.throws(() => command(r, p, "move", { loc: "city8" }));
   assert.equal(p.actions, beforeTravel);
   command(r, p, "move", { loc: "biome1" });
-  assert.equal(p.actions, beforeTravel - 1);
+  assert.equal(p.actions, beforeTravel);
   assert.deepEqual(view(r, r.players[1]).players[0].travel, [{ from: "city1", loc: "biome1", step: 1 }]);
   command(r, p, "explore");
   assert.equal(view(r, p).you.enc.battle, undefined);
@@ -65,6 +65,20 @@ test("economy respects action budgets, place, ownership and failed purchases", (
   while (p.actions) command(r, p, "work", { job: "vendedor" });
   assert.throws(() => command(r, p, "work", { job: "vendedor" }));
 });
+
+test("free travel still counts all six crossings for fatigue", () => {
+  const r = lobby(2), [p] = r.players;
+  command(r, p, "start", {...options, rounds:2});
+  readTutorials(r);
+  for (let i = 0; i < 6; i++)
+    command(r, p, "move", {loc:i % 2 ? "city1" : "biome1"});
+  assert.equal(p.actions, 10);
+  r.round = 2;
+  require("../game.cjs").beginRound(r, () => 0);
+  assert.equal(r.cards[0].type, "fatigue");
+  command(r, p, "card", {id:r.cards[0].id});
+  assert.equal(p.actions, 8);
+});
 test("trade transfers once, cancels a stale offer and awards correct end scores", () => {
   const r = lobby(2),
     [a, b] = r.players;
@@ -72,7 +86,7 @@ test("trade transfers once, cancels a stale offer and awards correct end scores"
   readTutorials(r);
   a.money = 200;
   b.items = { "poke-ball": 1 };
-  for (let i = 0; i < 2; i++)
+
     for (const p of r.players) command(r, p, "finish");
   const order = {
     to: b.id,
@@ -108,6 +122,8 @@ test("mixed counteroffers replace the original and shared Pokémon can only be t
   assert.throws(() => command(r, a, "offer", {to:b.id, give:[...give,give[1]], want}), /repetidos/);
   command(r, a, "offer", {to:b.id, give, want});
   command(r, a, "offer", {to:c.id, give, want});
+  command(r, a, "box", {uid:mon.uid});
+  assert.equal(view(r, b).players[0].box[0].uid, mon.uid);
   const [original, competing] = r.offers;
   assert.deepEqual(view(r, spectator).offers, []);
   command(r, b, "counter", {id:original.id, give:[{kind:"money", qty:250}], want:give});
@@ -434,7 +450,7 @@ test("Elite Four requires eight badges and takes place on the League island", ()
   p.loc = "city3";
   command(r, p, "move", { loc: "league1" });
   assert.equal(p.loc, "league1");
-  assert.equal(p.actions, 9);
+  assert.equal(p.actions, 10);
   command(r, p, "gym");
   assert.equal(p.enc.type, "elite");
   assert.equal(p.enc.target.level, view(r, p).gyms[8].levels.at(-1));
@@ -448,8 +464,8 @@ test("a Pokémon can only escape after its trainer reads the unhappy card", () =
   const recovering = rules.makeMon("pikachu");
   const satisfied = rules.makeMon("eevee");
   escaping.happiness = 0;
-  recovering.happiness = 52;
-  satisfied.happiness = 105;
+  recovering.happiness = 51;
+  satisfied.happiness = 52;
   a.box.push(escaping);
   a.party.push(recovering, satisfied);
   a.dex.push(escaping.speciesId);
@@ -461,13 +477,14 @@ test("a Pokémon can only escape after its trainer reads the unhappy card", () =
   }
 
   finishPhase("actions");
-  assert.equal(r.phase, "resumo");
+  assert.equal(r.phase, "trocas");
   assert.deepEqual(r.cards, []);
   assert.deepEqual(a.box, [escaping]);
-  assert.equal(recovering.happiness, 50);
+  assert.equal(recovering.happiness, 49);
+  assert.equal(satisfied.happiness, 50);
 
   a.battled = true;
-  for (const phase of ["resumo", "trocas", "duelos"]) finishPhase(phase);
+  for (const phase of ["trocas", "duelos"]) finishPhase(phase);
   assert.equal(r.round, 2);
   assert.equal(r.phase, "cards");
   assert.deepEqual(r.cards.filter(c => c.type === "unhappy").map(c => [c.type, c.target]), [
@@ -475,20 +492,23 @@ test("a Pokémon can only escape after its trainer reads the unhappy card", () =
     ["unhappy", escaping.uid],
   ]);
   readRoundCards(r);
+  assert.equal(satisfied.unhappyWarningOwner, undefined);
 
   for (let i = 0; i < 3; i++) command(r, a, "pet", { uid: recovering.uid });
+  command(r, a, "pet", { uid: satisfied.uid });
   assert.deepEqual(view(r, a).players.map(p => [p.petsGiven, p.points.carentesco]), [
-    [3, 3], [0, 0],
+    [4, 4], [0, 0],
   ]);
   finishPhase("actions");
-  assert.equal(r.phase, "resumo");
+  assert.equal(r.phase, "trocas");
   assert.deepEqual(r.cards, []);
   assert.deepEqual(a.box, []);
   assert.ok(a.party.includes(recovering));
+  assert.equal(recovering.unhappyWarningOwner, undefined);
   assert.ok(a.dex.includes(escaping.speciesId));
 
   a.battled = true;
-  for (const phase of ["resumo", "trocas", "duelos"]) finishPhase(phase);
+  for (const phase of ["trocas", "duelos"]) finishPhase(phase);
   assert.equal(r.round, 3);
   assert.equal(r.phase, "cards");
   assert.deepEqual(r.cards.filter(c => c.type === "cruel-trainer" || c.type === "unhappy").map(c => [c.type, c.target]), [
@@ -541,7 +561,7 @@ test("Box remains usable after a player's actions end and during the trainer sum
   assert.deepEqual(a.party, []);
   assert.deepEqual(view(r, b).players[0].box, [onlyMon]);
   command(r, b, "finish");
-  assert.equal(r.phase, "resumo");
+  assert.equal(r.phase, "trocas");
   command(r, a, "box", { uid: onlyMon.uid });
   assert.deepEqual(view(r, b).players[0].party, [onlyMon]);
 });
@@ -662,7 +682,7 @@ test("stone and trade evolutions record the before and after sprites for the own
     command(r, a, "resolveMove", { uid, move, replace: null });
   }
 
-  for (const phase of ["actions", "resumo"]) {
+  for (const phase of ["actions"]) {
     assert.equal(r.phase, phase);
     command(r, a, "finish");
     command(r, b, "finish");
@@ -915,7 +935,7 @@ test("the practice rival submits visible dodges and is eliminated if it stops do
   assert.deepEqual(race.winners, [human.id]);
 });
 
-test("battle XP is shared across the party and preserves fainted HP", () => {
+test("wild victories award shared XP without money and preserve fainted HP", () => {
   const r = lobby(2), [p] = r.players;
   command(r, p, "start", options);
   readTutorials(r);
@@ -931,6 +951,7 @@ test("battle XP is shared across the party and preserves fainted HP", () => {
   const target = rules.makeMon("rattata", 5);
   const expected = rules.battleXP(lead, target, r.mult);
   const previous = [...p.party, stored].map(mon => mon.xp);
+  const balance = p.money;
   p.enc = {
     type: "wild", target,
     battle: { choose() {}, view: () => ({ended: true, winner: "p1", own: {uid: lead.uid}}) },
@@ -938,6 +959,7 @@ test("battle XP is shared across the party and preserves fainted HP", () => {
   command(r, p, "fight", {cmd: "move 1"});
 
   const awarded = [...p.party, stored].map((mon, index) => mon.xp - previous[index]);
+  assert.equal(p.money, balance);
   assert.deepEqual(awarded, [0, 1, 2].map(index =>
     Math.floor(expected / 3) + (index < expected % 3 ? 1 : 0)
   ).concat(0, 0));
@@ -1088,7 +1110,7 @@ test("Monte Azul connects to the League island in both directions", () => {
   assert.equal(p.loc, "league1");
   command(r, p, "move", { loc: "city4" });
   assert.equal(p.loc, "city4");
-  assert.equal(p.actions, 8);
+  assert.equal(p.actions, 10);
 });
 
 test("duel roulette offers only formats supported by every party and room size", () => {

@@ -29,6 +29,7 @@ for (const [kind,duration] of [["rhythm",46000],["sorter",45000]]) {
   test(kind + " scores timed responses, resets combos on misses and ends on time", () => {
     const {room,game,players:[a,b]} = play(kind);
     assert.equal(game.deadline - game.start,duration);
+    assert.throws(() => arcadeAction(room,a,"arcadeTap",{lane:0},game.start - 1), /contagem/);
     for (const [index,event] of game.events.slice(0,3).entries()) {
       advanceArcade(room,game.start + event.at);
       arcadeAction(room,a,"arcadeTap",{lane:index === 2 ? (event.lane + 1) % 3 : event.lane},game.start + event.at);
@@ -63,6 +64,7 @@ test("three cards keeps choices secret, awards type advantage and spends the cho
 
 test("21 uses flexible aces, hides the deck and excludes busts from victory", () => {
   const {room,game,players:[a,b]} = play("twentyOne");
+  assert.equal(game.deadline - game.start,12000);
   Object.assign(game.players[a.id], {hand:[1,7],standing:false});
   Object.assign(game.players[b.id], {hand:[10,9],standing:false});
   game.deck.push(9,9);

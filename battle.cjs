@@ -149,6 +149,11 @@ function battleLog(line, viewer) {
   }
 }
 
+function exhaustedSlots(pokemon, active) {
+  if (!active?.moves.some(move => move.id === "struggle")) return [];
+  return pokemon.moveSlots.filter(move => move.pp === 0);
+}
+
 class BattleSession {
   constructor({ p1, p2, p3, p4, cpu = false, seed, mode = "solo" }) {
     this.cpu = cpu;
@@ -240,7 +245,7 @@ class BattleSession {
     const result = [];
     const active = req.active?.[0];
     for (const [i, move] of (active?.moves || []).entries()) {
-      if (move.disabled || move.pp === 0) continue;
+      const disabled = Boolean(move.disabled || move.pp === 0);
       const command = "move " + (i + 1);
       const { type, category, basePower, accuracy, priority } = Dex.moves.get(move.id);
       const choice = {
@@ -252,13 +257,16 @@ class BattleSession {
         basePower,
         accuracy,
         priority,
+        disabled,
         pp: move.pp,
         maxpp: move.maxpp,
       };
       result.push(choice);
-      if (active.canMegaEvo)
+      if (!disabled && active.canMegaEvo)
         result.push({ ...choice, command: command + " mega", label: move.move + " · Mega" });
     }
+    for (const move of exhaustedSlots(side.active[0], active))
+      result.push({kind:"move", label:move.move, pp:0, maxpp:move.maxpp, disabled:true});
     if (!active?.trapped) {
       for (const [i, pm] of side.pokemon.entries()) {
         if (
@@ -296,7 +304,7 @@ class BattleSession {
       const active = req.active?.[slot];
       if (!active) return [];
       const moves = active.moves.flatMap((move, i) => {
-        if (move.disabled || move.pp === 0) return [];
+        if (move.disabled || move.pp === 0) return [{label:move.move + " · " + move.pp + "/" + move.maxpp + " PP", disabled:true}];
         const base = "move " + (i + 1);
         const targetType = move.target || Dex.moves.get(move.id).target;
         const needsTarget = this.engine.actions.targetTypeChoices(targetType);
@@ -312,6 +320,8 @@ class BattleSession {
           return active.canMegaEvo ? [choice, {command:command + " mega", label:label + " · Mega"}] : [choice];
         });
       });
+      for (const move of exhaustedSlots(pm, active))
+        moves.push({label:move.move + " · 0/" + move.maxpp + " PP", disabled:true});
       return [{name:pm.name, options:active.trapped ? moves : [...moves, ...switches]}];
     });
   }
@@ -324,7 +334,7 @@ class BattleSession {
     const groups = this.engine.gameType === "singles"
       ? [{options:this.choices(id)}] : this.groupChoices(id);
     if (commands.length !== groups.length ||
-        !groups.every((group, index) => group.options.some(option => option.command === commands[index])))
+        !groups.every((group, index) => group.options.some(option => !option.disabled && option.command === commands[index])))
       throw new Error("Essa ação não está disponível nesta batalha.");
     if (!this.engine.choose(id, command))
       throw new Error("O simulador recusou essa ação.");
@@ -356,7 +366,7 @@ class BattleSession {
   advanceCpu() {
     if (!this.cpu) return;
     while (!this.engine.ended) {
-      const options = this.choices("p2");
+      const options = this.choices("p2").filter(choice => !choice.disabled);
       if (!options.length) break;
       const moves = options.filter((choice) => choice.kind === "move");
       const optionsToTry = (moves.length ? moves : options).slice();

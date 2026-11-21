@@ -61,4 +61,19 @@ test("concurrent joins keep both trainers in the cloud room", async t => {
   assert.ok(training.state.arcade.start);
   const ttl = Number(expirations.get(prefix + practice.code));
   assert.ok(ttl > 0 && ttl <= 30 * 60 * 1000);
+  const offer = {action:"rtcOffer", ...practice, kind:"magnetic", round:1, offer:{type:"offer",sdp:"test"}};
+  const apiUrl = "http://127.0.0.1:" + server.address().port + "/api/game";
+  const postOffer = () => fetch(apiUrl, {
+    method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(offer),
+  });
+  assert.equal((await postOffer()).status, 503);
+  process.env.AURORA_RTC_ORIGIN = "https://rtc.example.test";
+  t.after(() => delete process.env.AURORA_RTC_ORIGIN);
+  const realFetch = globalThis.fetch;
+  t.mock.method(globalThis, "fetch", (url, options) => {
+    if (String(url) !== "https://rtc.example.test/api") return realFetch(url, options);
+    assert.deepEqual(JSON.parse(options.body), offer);
+    return Promise.resolve(Response.json({answer:{type:"answer",sdp:"test-answer"}}));
+  });
+  assert.deepEqual(await (await postOffer()).json(), {answer:{type:"answer",sdp:"test-answer"}});
 });

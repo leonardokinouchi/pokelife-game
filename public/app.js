@@ -30,8 +30,8 @@ const locName = (id) => LOCATIONS.find((l) => l.id === id)?.name || id;
 const phases = {
   actions: "Expedição",
   cards: "Cartas da rodada",
-  resumo: "Encontro dos treinadores",
-  trocas: "Mercado de trocas",
+
+  trocas: "Encontro dos treinadores",
   minigame: "Minigame",
   duelos: "Duelos de treinadores",
   final: "Classificação final",
@@ -54,6 +54,92 @@ function toast(msg) {
   timer = setTimeout(() => ($("toast").hidden = true), 3500);
 }
 let serverOffset = 0;
+let clockRtt = Infinity;
+function syncClock(clock, sentAt) {
+  if (!clock) return;
+  const rtt = Date.now() - sentAt;
+  const sample = clock - sentAt - rtt / 2;
+  if (!Number.isFinite(clockRtt)) serverOffset = sample;
+  else if (rtt <= clockRtt + 50)
+    serverOffset += Math.max(-12, Math.min(12, (sample - serverOffset) * .22));
+  clockRtt = Math.min(rtt, clockRtt * 1.04 + 1);
+}
+
+const realtimeKinds = new Set(["magnetic", "race", "rhythm", "sorter"]);
+const realtimeActions = new Set(["arcadeMove", "arcadeTap", "dodge"]);
+let realtime;
+let realtimeKey;
+let realtimeId = 0;
+
+function closeRealtime(link) {
+  if (realtime !== link) return;
+  realtime = null;
+  link.peer.close();
+  for (const pending of link.pending.values()) {
+    clearTimeout(pending.timer);
+    pending.resolve(null);
+  }
+  link.pending.clear();
+}
+
+async function connectRealtime(s) {
+  const kind = s.minigame;
+  const key = session && realtimeKinds.has(kind) ? session.code + ":" + s.round + ":" + kind : null;
+  if (key === realtimeKey) return;
+  if (realtime) closeRealtime(realtime);
+  realtimeKey = key;
+  if (!key || !window.RTCPeerConnection) return;
+  let link;
+  try {
+    const peer = new RTCPeerConnection();
+    const channel = peer.createDataChannel("aurora");
+    link = realtime = {peer, channel, pending:new Map()};
+    channel.onclose = () => closeRealtime(link);
+    peer.onconnectionstatechange = () => {
+      if (["failed", "disconnected"].includes(peer.connectionState)) closeRealtime(link);
+    };
+    channel.onmessage = event => {
+      const packet = JSON.parse(event.data);
+      const pending = link.pending.get(packet.id);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      link.pending.delete(packet.id);
+      syncClock(packet.clock, pending.sentAt);
+      pending.resolve(packet);
+    };
+    await peer.setLocalDescription(await peer.createOffer());
+    if (peer.iceGatheringState !== "complete") await new Promise(resolve => {
+      const timer = setTimeout(resolve, 800);
+      peer.addEventListener("icegatheringstatechange", () => {
+        if (peer.iceGatheringState === "complete") { clearTimeout(timer); resolve(); }
+      });
+    });
+    if (realtime !== link) return;
+    const response = await fetch("/api", {
+      method:"POST", headers:{"Content-Type":"application/json"}, signal:AbortSignal.timeout(5500),
+      body:JSON.stringify({...session, action:"rtcOffer", round:s.round, kind, offer:peer.localDescription}),
+    });
+    if (!response.ok) throw Error("WebRTC indisponível");
+    await peer.setRemoteDescription((await response.json()).answer);
+    setTimeout(() => {
+      if (channel.readyState !== "open") closeRealtime(link);
+    }, 3500);
+  } catch {
+    if (link) closeRealtime(link);
+  }
+}
+
+function sendRealtime(payload) {
+  const link = realtime;
+  const id = ++realtimeId;
+  return new Promise(resolve => {
+    const timer = setTimeout(() => closeRealtime(link), 1250);
+    link.pending.set(id, {resolve, timer, sentAt:Date.now()});
+    try { link.channel.send(JSON.stringify({...payload, id})); }
+    catch { closeRealtime(link); }
+  });
+}
+
 async function request(payload) {
   const sentAt = Date.now();
   const response = await fetch("/api", {
@@ -62,7 +148,7 @@ async function request(payload) {
     body: JSON.stringify({ ...session, ...payload }),
   });
   const data = await response.json();
-  if (data.clock) serverOffset = data.clock - (sentAt + Date.now()) / 2;
+  syncClock(data.clock, sentAt);
   if (response.status === 403) {
     session = null;
     sessionStorage.removeItem(sessionKey);
@@ -106,7 +192,7 @@ function renderCard(s) {
       tutorial: "Vá ao posto de trabalho, escolha uma vaga e trabalhe no local indicado. Com seu primeiro salário, compre Poké Bolas e explore um bioma para tentar sua primeira captura.",
       fatigue: "Você percorreu mais de cinco trechos na última expedição. Comece esta rodada com duas ações a menos.",
       lazy: (card.name || "") + " passou a rodada sem batalhar com seu treinador. Perde 10 de felicidade e fica paralisado.",
-      unhappy: card.name + " terminou a rodada passada insatisfeito. Se a felicidade ficar abaixo de 50, ele pode fugir. Acaricie seu Pokémon para aumentar a felicidade.",
+      unhappy: card.name + " terminou a rodada passada com menos de 50 de felicidade. Se continuar abaixo de 50 ao fim desta rodada, ele pode fugir. Acaricie seu Pokémon para aumentar a felicidade.",
       "cruel-trainer": card.name + " fugiu por estar muito infeliz e saiu da sua coleção de Pokémon.",
       "restart-kit": "Você recebeu 1 Poké Bola para tentar uma nova captura. Este kit só pode ser recebido uma vez por partida.",
       "quiet-camp": "Faça carinho em dois Pokémon diferentes da sua equipe nesta rodada. O segundo ganha 10 de felicidade extra.",
@@ -140,6 +226,7 @@ $("roundCard").onclick = event => {
 };
 
 function setState(s) {
+  connectRealtime(s);
   playPairFeedback(state?.pairGame, s.pairGame);
   const soloEnd =
     state?.you.enc?.battle &&
@@ -185,13 +272,19 @@ function renderMoveLesson(s) {
   if (dialog.open && dialog.dataset.lesson === key) return;
   dialog.dataset.lesson = key;
   const choice = { uid: lesson.uid, move: lesson.move };
+  const details = move => [
+    moveTypes[move.type] || move.type, moveCategories[move.category] || move.category,
+    "Poder " + (move.basePower || "—"), "Precisão " + (move.accuracy === true ? "Não falha" : move.accuracy + "%"),
+    move.pp + " PP", move.shortDesc,
+  ].filter(Boolean).join(" · ");
+  const name = move => '<span class="lesson-move" title="' + esc(details(move)) +
+    '" tabindex="0" aria-description="' + esc(details(move)) + '">' + esc(move.name) + '</span>';
   dialog.innerHTML = '<h2 id="moveLessonTitle">Aprender golpe</h2><p>' +
-    esc(lesson.pokemon) + ' quer aprender <strong>' + esc(lesson.name) +
-    '</strong>. Qual golpe ele deve esquecer?</p><div class="move-lesson-options">' +
-    lesson.known.map((move) => btn("Esquecer " + move.name, "resolveMove",
-      { ...choice, replace: move.id })).join("") +
-    '</div><footer>' + btn("Não aprender " + lesson.name, "resolveMove",
-      { ...choice, replace: null }) + '</footer>';
+    esc(lesson.pokemon) + ' quer aprender ' + name(lesson) +
+    '. Escolha o slot a substituir.</p><div class="move-lesson-options">' +
+    lesson.known.map((move, index) => '<article><small>Slot ' + (index + 1) + '</small>' +
+      name(move) + btn("Substituir", "resolveMove", {...choice, replace:move.id}) + '</article>').join("") +
+    '</div><footer>' + btn("Não aprender", "resolveMove", {...choice, replace:null}) + '</footer>';
   if (!dialog.open) dialog.showModal();
   dialog.querySelector("button").focus();
 }
@@ -244,6 +337,13 @@ $("evolutionScene").oncancel = (event) => {
 };
 
 async function act(action, data = {}) {
+  if (realtime?.channel.readyState === "open" && realtimeActions.has(action)) {
+    const issued = ++sequence;
+    const out = await sendRealtime({action, ...data});
+    if (sequence === issued && out?.state) setState(out.state);
+    if (out?.error) toast(out.error);
+    return;
+  }
   if (busy) return;
   busy = true;
   sequence++;
@@ -262,10 +362,13 @@ async function act(action, data = {}) {
     }
     if (action === "shop" || action === "leaveShop") shopCart.clear();
     if (action === "offer" || action === "counter") {
-      tradeDraft = {give:[], want:[]};
-      tradeCounter = tradeConfirm = "";
-      tradeTab = "sent";
-      tradeMobile = "inbox";
+      tradeDrafts.delete(data.to);
+      if (tradePartner === data.to) {
+        tradeDraft = {give:[], want:[]};
+        tradeCounter = tradeConfirm = "";
+        tradeTab = "sent";
+        tradeMobile = "inbox";
+      }
       toast(action === "counter" ? "Contraproposta enviada." : "Oferta enviada.");
     }
     if (out.tradeNotice) {
@@ -274,9 +377,7 @@ async function act(action, data = {}) {
       toast(out.tradeNotice);
     }
     setState(out.state);
-    if (action === "move")
-      toast(locName(out.state.you.loc) + " · 1 ação gasta · " +
-        out.state.you.actions + " restantes");
+
   } catch (e) {
     toast(e.message);
   } finally {
@@ -288,8 +389,9 @@ async function poll() {
   polling = true;
   const issued = sequence;
   try {
-    const out = await request({ action: "state" });
-    if (sequence === issued && !busy) setState(out.state);
+    const out = realtime?.channel.readyState === "open" ?
+      await sendRealtime({action:"state"}) : await request({action:"state"});
+    if (sequence === issued && !busy && out?.state) setState(out.state);
   } catch (e) {
     toast(e.message);
   } finally {
@@ -649,7 +751,7 @@ function tradeEditor(side, title, owner) {
   return '<section class="exchange-side"><h4>' + title + '</h4><ul class="exchange-assets">' +
     draft.map(a => {
       const latest = inventory.find(b => tradeKey(b) === tradeKey(a));
-      return tradeAssetCard({...latest, ...a}, side);
+      return tradeAssetCard(a.kind === "mon" && latest ? latest : a, side);
     }).join("") + '</ul>' +
     '<div class="exchange-add"><label>Bem<select id="tradeAsset-' + side + '">' +
     inventory.map(a => opt(tradeKey(a), tradeAssetTitle(a) + (a.kind === "money" ? "" :
@@ -687,15 +789,88 @@ function tradeOfferCard(o) {
       btn("Confirmar troca", "accept", {id:o.id}, "primary") + btn("Voltar", "tradeBack") + '</div></div>' :
       '<div class="exchange-buttons">' + actions + '</div>') + '</article>';
 }
+const tradeDrafts = new Map();
+let tradeProfileTab = "party", tradeOwnProfile = false;
+let tradeSearch = "", tradeType = "", tradeShiny = false, tradePage = 0;
+function selectTradePartner(id) {
+  if (id === tradePartner) return;
+  tradeDrafts.set(tradePartner, {draft:tradeDraft, counter:tradeCounter});
+  tradePartner = id;
+  const saved = tradeDrafts.get(id);
+  tradeDraft = saved?.draft || {give:[], want:[]};
+  tradeCounter = saved?.counter || "";
+  tradeConfirm = "";
+  tradeTab = "received";
+  tradePage = 0;
+}
+function tradeProfile(partner) {
+  const p = state.you;
+  const q = tradeOwnProfile ? p : partner;
+  if (!q) return "";
+  const side = tradeOwnProfile ? "give" : "want";
+  const canTrade = partner && !partner.done && !p.done;
+  const add = (key, label) => canTrade ? btn(label, "tradePick", {key, side}) : "";
+  const monCard = (m, inParty) => '<article class="exchange-profile-mon"><ul class="exchange-assets">' +
+    tradeAssetCard({kind:"mon", id:m.uid, pokemon:m, inParty}) + '</ul>' +
+    bars(m) + add("mon:" + m.uid, tradeOwnProfile ? "Adicionar à oferta" : "Pedir na troca") +
+    '</article>';
+  let content = "";
+  if (tradeProfileTab === "party") {
+    content = '<div class="exchange-profile-team">' + Array.from({length:6}, (_, index) =>
+      q.party[index] ? monCard(q.party[index], true) :
+        '<div class="exchange-profile-mon exchange-empty-slot">Vaga livre</div>').join("") + '</div>';
+  } else if (tradeProfileTab === "box") {
+    const types = [...new Set(q.box.flatMap(m => m.types || []))].sort();
+    const matches = q.box.filter(m => m.name.toLocaleLowerCase("pt-BR").includes(tradeSearch) &&
+      (!tradeType || m.types?.includes(tradeType)) && (!tradeShiny || m.shiny));
+    const pageSize = 24;
+    tradePage = Math.min(tradePage, Math.max(0, Math.ceil(matches.length / pageSize) - 1));
+    content = '<div class="exchange-profile-filters"><label>Buscar Pokémon<input id="tradeSearch" type="search" value="' +
+      esc(tradeSearch) + '"></label><label>Tipo<select id="tradeType">' +
+      opt("", "Todos") + types.map(type => opt(type,type)).join("") +
+      '</select></label><label><input id="tradeShiny" type="checkbox"' + (tradeShiny ? ' checked' : '') +
+      '> Só shiny</label></div>' +
+      '<p>' + matches.length + ' de ' + q.box.length + ' Pokémon</p><div class="exchange-profile-team">' +
+      matches.slice(tradePage * pageSize, (tradePage + 1) * pageSize).map(m => monCard(m, false)).join("") +
+      '</div>' + (tradePage ? btn("Anterior", "tradePage", {delta:-1}) : "") +
+      ((tradePage + 1) * pageSize < matches.length ? btn("Próxima", "tradePage", {delta:1}) : "");
+  } else {
+    const goods = tradeInventory(q).filter(a => a.kind !== "mon");
+    content = goods.length ? '<ul class="exchange-profile-items">' + goods.map(a => {
+      const item = state.shop[a.id];
+      return '<li>' + (item ? itemArt(a.id) : "") + '<div><strong>' + esc(tradeAssetTitle(a)) +
+        '</strong><small>' + (item ? "× " + a.qty : "₽ " + a.qty) +
+        (item?.price ? " · Loja ₽ " + item.price : "") + '</small></div>' +
+        add(tradeKey(a), tradeOwnProfile ? "Adicionar à oferta" : "Pedir na troca") + '</li>';
+    }).join("") + '</ul>' : '<p class="exchange-empty">Mochila vazia.</p>';
+  }
+  const tabs = [["party","Equipe"], ["box","Box"], ["bag","Mochila"]].map(([id,label]) =>
+    '<button data-action="tradeProfileTab" data-args=\'' + JSON.stringify({id}) +
+    '\' aria-pressed="' + (id === tradeProfileTab) + '">' + label + '</button>').join("");
+  return '<section class="exchange-profile"><div class="exchange-profile-heading">' +
+    trainerSprite(q.avatar, "trainer-preview") + '<div><h3>' + esc(q.name) + '</h3><small>₽ ' +
+    q.money.toLocaleString("pt-BR") + ' · ' + q.badges.length + '/8 insígnias · ' +
+    (q.registered ?? q.dex?.length ?? 0) + ' espécies · ' + (q.shinyCaught ?? 0) + ' shiny</small></div></div>' +
+    '<div class="exchange-tabs">' + btn(tradeOwnProfile ? "Ver parceiro" : "Minha ficha", "tradeOwnProfile") +
+    (tradeOwnProfile ? '<button data-drawer="box">Abrir minha Box</button>' : '') + '</div>' +
+    '<div class="exchange-tabs">' + tabs + '</div>' + content + '</section>';
+}
+
 function trade() {
   const p = state.you, offers = state.offers;
   if (tradeRound !== state.round || !state.players.some(q => q.id === tradePartner)) {
     tradeRound = state.round;
-    tradePartner = state.players.find(q => q.id !== p.id && !q.done)?.id || "";
+    tradeDrafts.clear();
+    tradeOwnProfile = false;
+    tradeProfileTab = "party";
+    tradeSearch = tradeType = "";
+    tradeShiny = false;
+    tradePage = 0;
+    tradePartner = state.players.find(q => q.id !== p.id)?.id || "";
     tradeDraft = {give:[], want:[]};
     tradeCounter = tradeConfirm = "";
     tradeTab = "received";
-    tradeMobile = "table";
+    tradeMobile = "profile";
   }
   const others = state.players.filter(q => q.id !== p.id);
   const partner = others.find(q => q.id === tradePartner);
@@ -711,7 +886,8 @@ function trade() {
     return '<button class="exchange-person" data-action="tradePartner" data-args=\'' +
       esc(JSON.stringify({id:q.id})) + '\' aria-pressed="' + (q.id === tradePartner) + '">' +
       trainerSprite(q.avatar, "trainer-preview") + '<span><strong>' + esc(q.name) +
-      '</strong><small>' + (q.done ? 'Encerrou' : 'Negociando') + '</small></span>' +
+      '</strong><small>' + (q.done ? 'Concluiu' : 'Negociando') + ' · ₽ ' + q.money.toLocaleString('pt-BR') +
+      ' · ' + q.badges.length + '/8 insígnias</small></span>' +
       (count ? '<b aria-label="' + count + ' ofertas recebidas">' + count + '</b>' : '') + '</button>';
   }).join("");
   let table = '<p class="exchange-empty">Selecione um treinador disponível.</p>';
@@ -729,36 +905,40 @@ function trade() {
   const tabs = [["received","Recebidas"], ["sent","Enviadas"], ["history","Histórico"]]
     .map(([id,name]) => '<button data-action="tradeTab" data-args=\'' + JSON.stringify({id}) +
       '\' aria-pressed="' + (tradeTab === id) + '">' + name + ' · ' + groups[id].length + '</button>').join("");
-  return '<section class="exchange" data-mobile="' + tradeMobile + '"><header><h2>Mercado de trocas</h2></header>' +
+  return '<section class="exchange" data-mobile="' + tradeMobile + '"><header><h2>Encontro dos treinadores</h2></header>' +
     '<div class="exchange-layout"><aside class="exchange-people"><h3>Treinadores</h3>' + people + '</aside>' +
-    '<div class="exchange-mobile" aria-label="Seções do mercado">' + btn("Proposta", "tradeMobile", {id:"table"}) +
+    '<div class="exchange-mobile" aria-label="Seções do encontro">' + btn("Ficha", "tradeMobile", {id:"profile"}) + btn("Proposta", "tradeMobile", {id:"table"}) +
     btn("Ofertas (" + pending.filter(o => o.to === p.id).length + ")", "tradeMobile", {id:"inbox"}) + '</div>' +
-    '<main class="exchange-table">' + table + '</main><aside class="exchange-inbox"><h3>Ofertas</h3>' +
+    tradeProfile(partner) + '<section class="exchange-table">' + table + '</section><aside class="exchange-inbox"><h3>Ofertas</h3>' +
     '<div class="exchange-tabs">' + tabs + '</div>' + (groups[tradeTab].length ?
       groups[tradeTab].map(tradeOfferCard).join("") : '<p class="exchange-empty">Nenhuma oferta nesta aba.</p>') +
-    '</aside></div><details id="exchangeRosters"><summary>Consultar treinadores</summary>' +
-    trainerGrid() + '</details><footer>' + (p.done ? 'Você encerrou as negociações.' : tradeConfirm === "finish" ?
-      '<p>' + pending.length + ' oferta(s) pendente(s) serão canceladas. Encerrar negociações?</p>' +
-      btn("Confirmar encerramento", "finish", {}, "primary") + btn("Voltar", "tradeBack") :
-      btn("Encerrar negociações", "tradeFinish")) + '</footer></section>';
+    '</aside></div><footer>' + (p.done ? 'Você concluiu o encontro.' : tradeConfirm === "finish" ?
+      '<p>' + pending.length + ' oferta(s) pendente(s) serão canceladas. Concluir encontro?</p>' +
+      btn("Confirmar conclusão", "finish", {}, "primary") + btn("Voltar", "tradeBack") :
+      btn("Concluir encontro", "tradeFinish")) + '</footer></section>';
 }
 
 function tradeInteraction(action, d) {
   if (action === "tradePartner") {
-    if (tradePartner !== d.id) {
-      tradePartner = d.id;
-      tradeDraft = {give:[], want:[]};
-      tradeCounter = tradeConfirm = "";
-      tradeTab = "received";
-    }
+    selectTradePartner(d.id);
+    tradeOwnProfile = false;
+    tradeMobile = "profile";
+  } else if (action === "tradeOwnProfile") {
+    tradeOwnProfile = !tradeOwnProfile;
+    tradePage = 0;
+  } else if (action === "tradeProfileTab") {
+    tradeProfileTab = d.id;
+    tradePage = 0;
+  } else if (action === "tradePage") {
+    tradePage += d.delta;
   } else if (action === "tradeTab") {
     tradeTab = d.id;
     tradeConfirm = "";
   } else if (action === "tradeMobile") {
     tradeMobile = d.id;
-  } else if (action === "tradeAdd") {
+  } else if (action === "tradeAdd" || action === "tradePick") {
     const owner = d.side === "give" ? state.you : state.players.find(q => q.id === tradePartner);
-    const asset = tradeInventory(owner).find(a => tradeKey(a) === v("tradeAsset-" + d.side));
+    const asset = tradeInventory(owner).find(a => tradeKey(a) === (d.key || v("tradeAsset-" + d.side)));
     if (!asset) return;
     const side = tradeDraft[d.side];
     const existing = side.find(a => tradeKey(a) === tradeKey(asset));
@@ -766,18 +946,22 @@ function tradeInteraction(action, d) {
       if (existing) return toast("Este Pokémon já está na proposta.");
       side.push(asset);
     } else {
-      const qty = Number(v("tradeQty-" + d.side));
+      const qty = action === "tradePick" ? 1 : Number(v("tradeQty-" + d.side));
       if (!Number.isSafeInteger(qty) || qty < 1 || qty + (existing?.qty || 0) > asset.qty)
         return toast("Quantidade superior ao disponível ou inválida.");
       if (existing) existing.qty += qty;
       else side.push({...asset, qty});
+    }
+    if (action === "tradePick") {
+      tradeMobile = "table";
+      toast(d.side === "give" ? "Adicionado ao que você entrega." : "Adicionado ao que você recebe.");
     }
   } else if (action === "tradeRemove") {
     tradeDraft[d.side] = tradeDraft[d.side].filter(a => tradeKey(a) !== d.key);
   } else if (action === "tradeCounter") {
     const offer = state.offers.find(o => o.id === d.id && o.to === state.you.id && isPendingTrade(o));
     if (!offer) return;
-    tradePartner = offer.from;
+    selectTradePartner(offer.from);
     tradeCounter = offer.id;
     tradeDraft = {give:structuredClone(tradeList(offer.want)), want:structuredClone(tradeList(offer.give))};
     tradeConfirm = "";
@@ -801,6 +985,18 @@ function tradeInteraction(action, d) {
   render();
 }
 
+document.addEventListener("input", e => {
+  const input = e.target;
+  if (!["tradeSearch", "tradeType", "tradeShiny"].includes(input.id)) return;
+  if (input.id === "tradeSearch") tradeSearch = input.value.trim().toLocaleLowerCase("pt-BR");
+  if (input.id === "tradeType") tradeType = input.value;
+  if (input.id === "tradeShiny") tradeShiny = input.checked;
+  tradePage = 0;
+  const caret = input.id === "tradeSearch" ? input.selectionStart : null;
+  render();
+  if (caret !== null) $("tradeSearch")?.setSelectionRange(caret, caret);
+});
+
 function controls() {
   if (state.phase === "trocas") return trade();
   const s = state,
@@ -818,18 +1014,12 @@ function controls() {
               (q.done ? "Concluído" : "Jogando") +
               "</b></div>",
           )
-          .join("") + (s.phase === "actions" || s.phase === "resumo"
+          .join("") + (s.phase === "actions"
             ? '<div class="summary-actions"><button data-drawer="box">Abrir Box</button></div>'
             : ""),
       )
     );
   if (s.phase === "actions") return actions();
-  if (s.phase === "resumo")
-    return panel(
-      "Resumo dos treinadores",
-      trainerGrid() + '<div class="summary-actions"><button data-drawer="box">Abrir Box</button>' +
-      btn("Ir para as trocas", "finish", {}, "primary") + '</div>',
-    );
   const d = s.duel;
   return (
     panel(
@@ -878,6 +1068,7 @@ function render() {
     )
       el.value = value;
   }
+  if ($("tradeType")) $("tradeType").value = tradeType;
   if ($("labFields")) updateLabTotal();
   opened.forEach((id) => {
     if ($(id)) $(id).open = true;
@@ -1042,11 +1233,6 @@ function initializeScreen() {
         shopFilter = "all";
       } else shopFilter = b.dataset.shopFilter;
       updateCatalog(true);
-    }
-    if (b.dataset.postScroll) {
-      const jobs = $("postJobs");
-      jobs?.scrollBy({ left: Number(b.dataset.postScroll) * jobs.clientWidth * .85,
-        behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     }
     if (b.dataset.shopItem) {
       shopItem = b.dataset.shopItem;
@@ -1268,8 +1454,8 @@ function arenaView(b, e) {
             const details = type + " · " + category + " | Poder " + (c.basePower || "—") +
               " | Precisão " + accuracy + (c.priority ? " | Prioridade " + c.priority : "");
             return '<button class="battle-move" data-action="fight" data-args="' +
-              esc(JSON.stringify({ cmd: c.command })) + '" data-type="' + esc(c.type || "") +
-              '" data-move-details="' + esc(details) + '" aria-description="' + esc(details) + '">' +
+              esc(JSON.stringify({ cmd: c.command })) + '" data-type="' + esc(c.type || "") + '"' + (c.disabled ? ' disabled' : '') +
+              ' data-move-details="' + esc(details) + '" aria-description="' + esc(details) + '">' +
               '<strong>' + esc(c.label) + '</strong>' +
               (c.pp != null ? '<span>' + c.pp + '/' + c.maxpp + ' PP</span>' : '') +
               '</button>';
@@ -1294,7 +1480,7 @@ function arenaView(b, e) {
     ? '<div class="group-battle-actions">' + b.groups.map((group, index) =>
       '<label>' + esc(group.name) + select("duel-" + b.turn + "-" + index,
         (group.options.length === 1 ? "" : opt("", "Escolher ação")) +
-        group.options.map(choice => opt(choice.command, choice.label)).join("")
+        group.options.map(choice => choice.disabled ? '<option disabled>' + esc(choice.label) + '</option>' : opt(choice.command, choice.label)).join("")
       ) + '</label>').join("") + btn("Confirmar ações", "groupFight", {}, "primary") + '</div>'
     : '<p>Aguardando os outros treinadores…</p>';
   return (
@@ -1349,7 +1535,7 @@ const miniInstructions = {
   rhythm: "Aperte A, S, K ou L quando a nota da coluna cruzar a linha. Os combos dão pontos extras. A faixa dura 46 segundos.",
   sorter: "Separe as bolas antes que caiam. Use 1 para Poké Bola, 2 para Grande Bola e 3 para Ultra Bola. A esteira acelera durante 45 segundos.",
   elements: "Escolha uma carta por mão. Fogo vence Planta, Planta vence Água, Água vence Fogo. Receba +2 se tiver vantagem contra pelo menos um adversário. Cada carta é usada uma vez.",
-  twentyOne: "Use 1 para pedir ou 2 para parar e confirme com Enter. O Ás vale 1 ou 11. Ganha quem chegar mais perto de 21 sem estourar.",
+  twentyOne: "Clique em Pedir carta ou Parar, ou use 1 e 2. Você tem 12 segundos por decisão. O Ás vale 1 ou 11. Ganha quem chegar mais perto de 21 sem estourar.",
   claim: "Escolha uma carta da mesa. Se só você tentar pegá-la, ganha seus pontos. Se mais alguém escolher a mesma, ela fica na mesa valendo mais na próxima rodada. São quatro rodadas.",
 };
 let raceFrame = 0;
@@ -1847,7 +2033,12 @@ document.addEventListener("keydown", event => {
     const lane = arcadeKeys[state.minigame].indexOf(key.toUpperCase());
     if (lane < 0 || event.repeat) return;
     event.preventDefault();
-    if (Date.now() + serverOffset < game.deadline) act("arcadeTap", {lane});
+    const now = Date.now() + serverOffset;
+    if (now >= game.start && now < game.deadline) act("arcadeTap", {lane});
+  } else if (state.minigame === "twentyOne" && ["1", "2"].includes(key) && !event.repeat) {
+    event.preventDefault();
+    if (!game.you.standing && game.you.choice === null && Date.now() + serverOffset < game.deadline)
+      act("arcadePick", {choice:Number(key) - 1, round:game.round});
   } else if (!game.events && (["1", "2", "3", "Enter"].includes(key)) && !event.repeat &&
       (key !== "Enter" || arcadeSelected !== null)) {
     event.preventDefault();
@@ -1861,22 +2052,25 @@ function renderKeyboardArcade(s) {
     content = '<div class="arcade-grid" aria-label="Arena magnética">' +
       Array.from({length:25}, () => '<i></i>').join("") + s.players.map(p =>
         '<div class="arcade-trainer" data-id="' + esc(p.id) + '" title="' + esc(p.name) + '">' +
-        trainerSprite(p.avatar, "", p.name) + '</div>').join("") + '</div>' +
+        trainerSprite(p.avatar, "", p.name) + '<small>' + esc(p.name) + '</small></div>').join("") + '</div>' +
       '<div class="arcade-keys">' + [["↑","up"],["←","left"],["↓","down"],["→","right"]].map(([label,direction]) =>
         btn(label, "arcadeMove", {direction})).join("") + '</div>';
   } else if (s.minigame === "rhythm") {
     content = '<div class="arcade-rhythm" aria-label="Pistas do ritmo"><div class="arcade-hit-line"></div>' +
-      arcadeKeys.rhythm.map((key, lane) => '<div class="arcade-lane" style="--lane:' + lane + '">' +
+      arcadeKeys.rhythm.map((key, lane) => '<div class="arcade-lane" style="--lane:' + lane + '" data-key="' + key + '">' +
         Array.from({length:5}, () => '<i hidden></i>').join("") + '</div>').join("") + '</div>' +
       '<div class="arcade-keys">' + arcadeKeys.rhythm.map((key, lane) => btn(key, "arcadeTap", {lane})).join("") + '</div>';
   } else {
-    content = '<div class="arcade-belt" aria-label="Esteira">' + arcadeBalls.map(ball =>
-      '<div class="arcade-ball" hidden>' + itemArt(ball) + '</div>').join("") + '</div>' +
+    content = '<div class="arcade-machine"><div class="arcade-belt" aria-label="Esteira">' +
+      Array.from({length:3}, () => '<div class="arcade-ball" hidden>' +
+        arcadeBalls.map(ball => '<span>' + itemArt(ball) + '</span>').join("") + '</div>').join("") +
+      '</div><div class="arcade-chute" aria-hidden="true"></div></div>' +
       '<div class="arcade-keys">' + arcadeBallNames.map((label, lane) =>
-        btn((lane + 1) + " · " + label, "arcadeTap", {lane})).join("") + '</div>';
+        btn((lane + 1) + " · " + label, "arcadeTap", {lane}, "", arcadeBalls[lane])).join("") + '</div>';
   }
-  return '<section class="arcade-panel" id="arcadeStage"><div class="arcade-hud"><strong></strong><span></span></div>' +
-    content + '</section>';
+  return '<section class="arcade-panel" id="arcadeStage"><div class="arcade-hud"><strong></strong>' +
+    '<output class="arcade-feedback" aria-hidden="true"></output><span></span></div>' +
+    '<div class="arcade-countdown" role="status" hidden></div>' + content + '</section>';
 }
 
 function animateKeyboardArcade(stage, initial) {
@@ -1884,6 +2078,9 @@ function animateKeyboardArcade(stage, initial) {
   const kind = initial.minigame;
   const stats = stage.querySelector(".arcade-hud strong");
   const timer = stage.querySelector(".arcade-hud span");
+  const feedback = stage.querySelector(".arcade-feedback");
+  const countdown = stage.querySelector(".arcade-countdown");
+  const controls = [...stage.querySelectorAll('[data-action="arcadeTap"]')];
   const cells = [...stage.querySelectorAll(".arcade-grid > i")];
   const figures = new Map([...stage.querySelectorAll(".arcade-trainer")].map(node => [node.dataset.id, node]));
   const lanes = [...stage.querySelectorAll(".arcade-lane")].map(node => [...node.children]);
@@ -1894,13 +2091,30 @@ function animateKeyboardArcade(stage, initial) {
   let cursor = initial.arcade.you.cursor;
   let score = initial.arcade.you.score;
   let wave = initial.arcade.round;
+  let lastFeedback = 0;
+  let sortedBall = null;
 
   function frame() {
     const game = state?.arcade;
     if (!stage.isConnected || state?.phase !== "minigame" || game?.start !== start || game.results) return;
     const now = Date.now() + serverOffset;
     const elapsed = now - start;
-    const seconds = Math.max(0, Math.ceil((game.deadline - now) / 1000));
+    const starting = elapsed < 0;
+    const number = starting ? String(Math.min(3, Math.ceil(-elapsed / 1000))) : "";
+    if (countdown.textContent !== number) countdown.textContent = number;
+    countdown.hidden = !starting;
+    for (const button of controls) button.disabled = starting || now >= game.deadline;
+    const cursorChanged = game.you.cursor > cursor;
+    const scored = game.you.score > score;
+    if (cursorChanged) {
+      feedback.textContent = scored ? "+" + (game.you.score - score) : "Errou";
+      feedback.dataset.hit = String(scored);
+      lastFeedback = now;
+      if (kind === "sorter" && scored && events[cursor])
+        sortedBall = {event:events[cursor], index:cursor, at:elapsed};
+    }
+    feedback.classList.toggle("visible", now - lastFeedback < 420);
+    const seconds = Math.max(0, Math.ceil((game.deadline - Math.max(now, start)) / 1000));
     const clock = seconds + " s";
     if (timer.textContent !== clock) timer.textContent = clock;
     timer.classList.toggle("urgent", seconds <= 8);
@@ -1910,12 +2124,20 @@ function animateKeyboardArcade(stage, initial) {
     if (kind === "magnetic") {
       const event = events[game.round];
       const warning = event && elapsed >= event.at - event.warning;
-      cells.forEach((cell, index) => cell.classList.toggle("arcade-danger", Boolean(warning && event.danger.includes(index))));
+      const strike = events[game.round - 1];
+      const firing = strike && elapsed >= strike.at && elapsed - strike.at < 270;
+      cells.forEach((cell, index) => {
+        cell.classList.toggle("arcade-danger", Boolean(warning && event.danger.includes(index)));
+        cell.classList.toggle("arcade-strike", Boolean(firing && strike.danger.includes(index)));
+      });
       for (const p of game.players) {
         const figure = figures.get(p.id);
-        figure.hidden = !p.alive;
-        figure.style.left = (p.cell % 5 * 20 + 10) + "%";
-        figure.style.top = (Math.floor(p.cell / 5) * 20 + 10) + "%";
+        figure.classList.toggle("arcade-eliminated", !p.alive);
+        if (figure.dataset.cell !== String(p.cell)) {
+          figure.style.left = (p.cell % 5 * 20 + 10) + "%";
+          figure.style.top = (Math.floor(p.cell / 5) * 20 + 10) + "%";
+          figure.dataset.cell = p.cell;
+        }
         figure.classList.toggle("arcade-self", p.id === state.you.id);
       }
       if (game.round > wave) {
@@ -1933,21 +2155,39 @@ function animateKeyboardArcade(stage, initial) {
       }
       for (let i = 0; i < lanes.length; i++)
         for (let j = slots[i]; j < lanes[i].length; j++) lanes[i][j].hidden = true;
+      stage.classList.toggle("arcade-beat", events[nextSound - 1] && elapsed - events[nextSound - 1].at < 110);
       while (events[nextSound]?.at <= elapsed) {
         const event = events[nextSound++];
         if (elapsed - event.at < 95) playNotes([[tones[event.lane], tones[event.lane] * .82, .12]]);
       }
     } else {
-      const event = events[game.you.cursor];
-      const end = events[game.you.cursor + 1]?.at ?? game.deadline - start;
-      const active = event && elapsed >= event.at && elapsed < end;
+      const visible = [];
+      for (let i = game.you.cursor; i < Math.min(events.length, game.you.cursor + 2); i++) {
+        const event = events[i];
+        const end = events[i + 1]?.at ?? game.deadline - start;
+        if (elapsed >= event.at - 115 && elapsed < end + 120)
+          visible.push({lane:event.lane, x:8 + 84 * (elapsed - event.at) / (end - event.at), active:elapsed >= event.at});
+      }
+      if (sortedBall && elapsed - sortedBall.at < 260) {
+        const end = events[sortedBall.index + 1]?.at ?? game.deadline - start;
+        const progress = (elapsed - sortedBall.at) / 260;
+        const x = 8 + 84 * (sortedBall.at - sortedBall.event.at) / (end - sortedBall.event.at);
+        visible.push({lane:sortedBall.event.lane, x:x + progress * 8, exit:progress});
+      }
       balls.forEach((ball, i) => {
-        ball.hidden = !active || i !== event.lane;
-        if (!ball.hidden) ball.style.left = (9 + 82 * (elapsed - event.at) / (end - event.at)) + "%";
+        const item = visible[i];
+        ball.hidden = !item;
+        if (!item) return;
+        ball.dataset.lane = item.lane;
+        ball.dataset.active = Boolean(item.active);
+        ball.style.left = item.x + "%";
+        ball.style.setProperty("--roll", item.x * 3 + "deg");
+        ball.style.setProperty("--drop", (item.exit ?? 0) * 70 + "px");
+        ball.style.setProperty("--fade", 1 - (item.exit ?? 0));
       });
     }
-    if (game.you.cursor > cursor) {
-      if (game.you.score > score) playNotes([[520,760,.08]]);
+    if (cursorChanged) {
+      if (scored) playNotes([[520,760,.08]]);
       else if (game.you.combo === 0 && kind === "sorter") playNotes([[220,115,.09]]);
       cursor = game.you.cursor;
       score = game.you.score;
@@ -1958,9 +2198,9 @@ function animateKeyboardArcade(stage, initial) {
 }
 
 function arcadeCard(card) {
-  const icon = {Fogo:"◆", Água:"●", Planta:"▲"}[card.type];
+  const art = {Fogo:"fire-stone", Água:"water-stone", Planta:"leaf-stone"}[card.type];
   return '<span class="arcade-card" data-type="' + esc(card.type) + '">' +
-    '<span aria-hidden="true">' + icon + '</span><b>' + card.value + '</b><small>' + esc(card.type) + '</small></span>';
+    '<b>' + card.value + '</b><span aria-hidden="true">' + itemArt(art) + '</span><small>' + esc(card.type) + '</small></span>';
 }
 
 function renderCardArcade(s) {
@@ -1974,23 +2214,30 @@ function renderCardArcade(s) {
   }
   let board;
   if (kind === "twentyOne") {
-    board = '<div class="arcade-hands">' + game.players.map(p => '<div><b>' + esc(name(p.id)) +
-      '</b><span>' + p.hand.map(rank => '<i>' + ([,"A",2,3,4,5,6,7,8,9,10,"J","Q","K"][rank]) + '</i>').join("") +
+    board = '<div class="arcade-hands">' + game.players.map(p => '<div data-bust="' + (p.value > 21) +
+      '"><b>' + esc(name(p.id)) + '</b><span>' + p.hand.map((rank, index) =>
+        '<i class="' + (game.reveal?.find(row => row.id === p.id)?.took && index === p.hand.length - 1 ? 'arcade-dealt' : '') +
+        '">' + ([,"A",2,3,4,5,6,7,8,9,10,"J","Q","K"][rank]) + '<small aria-hidden="true">◆</small></i>').join("") +
       '</span><strong>' + (p.value > 21 ? p.value + " · Estourou" : p.value + (p.standing ? " · Parou" : "")) +
       '</strong></div>').join("") + '</div>';
   } else if (game.reveal) {
-    board = '<div class="arcade-cards">' + game.reveal.map(row => '<div>' + arcadeCard(row.card) +
+    board = '<div class="arcade-cards arcade-reveal">' + game.reveal.map((row, index) => '<div style="--deal:' +
+      Math.min(index, 6) * 45 + 'ms" data-contested="' + !!row.contested + '">' + arcadeCard(row.card) +
       '<small>' + esc(kind === "elements" ? name(row.id) + " · +" + row.points :
-        row.winner ? name(row.winner) : row.contested ? "Disputada · +1" : "Sem escolha") + '</small></div>').join("") + '</div>';
+            row.winner ? name(row.winner) + " · +" + row.card.value :
+              row.contested ? "Disputada · +1" : "Sem escolha") + '</small></div>').join("") + '</div>';
   } else board = '';
   const canChoose = !game.reveal && !game.you.standing && game.you.choice === null;
   const cards = kind === "twentyOne" ? ["Pedir carta","Parar"] : kind === "elements" ? game.you.hand : game.table;
-  const choices = canChoose ? '<div class="arcade-cards">' + cards.map((card, choice) => card ?
+  const choices = !canChoose ? '' : kind === "twentyOne" ?
+    '<div class="arcade-cards">' + cards.map((label, choice) =>
+      btn((choice + 1) + " · " + label, "arcadePick", {choice, round:game.round}, choice === 0 ? "primary" : "")
+    ).join("") + '</div>' : '<div class="arcade-cards">' + cards.map((card, choice) => card ?
     '<button type="button" data-action="arcadeSelect" data-arcade-choice="' + choice + '" data-args="' +
     esc(JSON.stringify({choice})) + '" aria-pressed="' + (arcadeSelected === choice) + '">' +
-    '<kbd>' + (choice + 1) + '</kbd>' + (typeof card === "string" ? esc(card) : arcadeCard(card)) + '</button>' : '').join("") +
+    '<kbd>' + (choice + 1) + '</kbd>' + arcadeCard(card) + '</button>' : '').join("") +
     '</div><button type="button" id="arcadeConfirm" class="primary" data-action="arcadeConfirm"' +
-    (arcadeSelected === null ? ' disabled' : '') + '>Confirmar</button>' : '';
+    (arcadeSelected === null ? ' disabled' : '') + '>Confirmar <kbd>↵</kbd></button>';
   const status = kind === "twentyOne" || game.reveal ? '' : '<p>' +
     game.players.filter(p => p.ready).length + ' de ' + game.players.length + ' escolheram · ' + game.you.score + ' pontos</p>';
   return '<section class="arcade-panel"><div class="arcade-hud"><strong>' +
@@ -2004,9 +2251,9 @@ function renderArcade(s) {
   const game = s.arcade;
   if (!game.results) return game.events ? renderKeyboardArcade(s) : renderCardArcade(s);
   const players = new Map(s.players.map(p => [p.id, p]));
-  return '<section class="arcade-panel"><h3>Resultado</h3><ol class="arcade-results">' + game.results.map(row => {
+  return '<section class="arcade-panel arcade-finish"><h3>Resultado</h3><ol class="arcade-results">' + game.results.map(row => {
     const p = players.get(row.id);
-    return '<li>' + trainerSprite(p.avatar, "") + '<b>' + esc(p.name) + '</b><span>' +
+    return '<li data-winner="' + row.won + '">' + trainerSprite(p.avatar, "") + '<b>' + esc(p.name) + '</b><span>' +
       (row.score < 0 ? "Estourou" : row.score + (s.minigame === "magnetic" ? " · Sobrevivência" : " pontos")) +
       (row.won ? ' · Venceu' : '') + '</span></li>';
   }).join("") + '</ol>' + (s.you.done ? '<p>Aguardando o grupo…</p>' :
@@ -2213,7 +2460,7 @@ function renderWorld() {
       if (id === leagueIsland) {
         const { phase, you } = state;
         if (you.loc !== leagueIsland &&
-            (!leaguePorts.includes(you.loc) || phase !== "actions" || you.done || you.enc || !you.actions)) return;
+            (!leaguePorts.includes(you.loc) || phase !== "actions" || you.done || you.enc)) return;
         drawer = "league";
         activeFacility = "";
         render();
@@ -2234,7 +2481,7 @@ function renderWorld() {
   }
   WorldMap.update(p.loc, s.players,
     s.phase === "actions" && !p.done && !p.enc && p.eliteRun == null && p.actions > 0, s.gyms);
-  const canReorder = ["actions", "resumo"].includes(s.phase) && !p.enc && !p.moveLesson;
+  const canReorder = ["actions", "trocas"].includes(s.phase) && !p.enc && !p.moveLesson;
   $("partyRail").innerHTML =
     "<small>EQUIPE</small>" +
     Array.from({ length: 6 }, (_, i) => {
@@ -2320,7 +2567,7 @@ function renderWorld() {
   if (p.shopVisit && s.phase === "actions") drawer = "shop";
   $("overlay").classList.toggle(
     "widePhase",
-    drawer === "phase" && ["resumo", "trocas"].includes(s.phase),
+    drawer === "phase" && s.phase === "trocas",
   );
   renderPersonalPanel();
   $("overlay").classList.toggle("visit", ["local", "league"].includes(drawer));
@@ -2337,7 +2584,7 @@ function renderWorld() {
     $("shopCatalog").scrollTop = pos;
   }
   else if (drawer === "facility") {
-    const scroll = $("postJobs")?.scrollLeft || 0;
+    const scroll = $("postJobs")?.scrollTop || 0;
     const selectedPokemon = v("labPokemon");
     $("content").innerHTML = facilityScreen();
     if ($("labPokemon")) {
@@ -2346,11 +2593,7 @@ function renderWorld() {
       updateLabEditor();
     }
     const jobs = $("postJobs");
-    if (jobs) {
-      jobs.scrollLeft = scroll;
-      jobs.addEventListener("scroll", updatePostScroll);
-      updatePostScroll();
-    }
+    if (jobs) jobs.scrollTop = scroll;
   }
 }
 
@@ -2913,25 +3156,13 @@ const facilityNames = {
   center: "Centro Pokémon", store: "Loja", post: "Posto de trabalho", lab: "Laboratório",
 };
 
-function updatePostScroll() {
-  const jobs = $("postJobs");
-  if (!jobs) return;
-  document.querySelector('[data-post-scroll="-1"]').disabled = jobs.scrollLeft < 1;
-  document.querySelector('[data-post-scroll="1"]').disabled =
-    jobs.scrollLeft + jobs.clientWidth >= jobs.scrollWidth - 1;
-}
-window.addEventListener("resize", updatePostScroll);
-
 function jobPost(p) {
   return '<section class="post-screen" data-theme="post" aria-labelledby="postTitle">' +
     '<div class="post-heading">' + uiIcon("backpack") +
     '<h2 id="postTitle">Quadro de empregos</h2><span>' + esc(locName(p.loc)) + '</span>' + actionBalance(p) + '</div>' +
     '<div class="post-layout"><aside class="post-reception">' +
     '<img src="npc/posto.png" alt="Atendente do Posto de Trabalho"></aside>' +
-    '<div class="post-vacancies"><div class="post-nav">' +
-    '<button type="button" data-post-scroll="-1" aria-controls="postJobs" aria-label="Vagas anteriores">‹</button>' +
-    '<button type="button" data-post-scroll="1" aria-controls="postJobs" aria-label="Mais vagas">›</button>' +
-    '</div>' + jobBoard(p) + '</div></div></section>';
+    '<div class="post-vacancies">' + jobBoard(p) + '</div></div></section>';
 }
 
 function jobBoard(p, facility) {
@@ -2979,7 +3210,7 @@ function leagueEntryReason() {
   if (state.phase !== "actions" || p.done || p.enc) return "Aguarde a próxima fase de ações.";
   if (p.loc === leagueIsland) return "";
   if (!leaguePorts.includes(p.loc)) return "O barco para a Ilha da Liga sai de " + leaguePorts.map(locName).join(" ou ") + ".";
-  return p.actions > 0 ? "" : "Sem ações disponíveis para viajar.";
+  return "";
 }
 
 function leagueScene() {

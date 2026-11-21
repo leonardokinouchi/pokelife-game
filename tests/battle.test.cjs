@@ -89,6 +89,9 @@ test("zero PP on reopening a battle exposes Struggle", () => {
     seed,
   });
   assert.equal(battle.view("p1").choices[0].label, "Struggle");
+  const exhausted = battle.view("p1").choices.find(choice => choice.label === "Thunder Shock");
+  assert.equal(exhausted?.pp, 0);
+  assert.equal(exhausted.disabled, true);
 });
 
 test("battle view publishes confusion, stat changes and field effects to both players", () => {

@@ -300,6 +300,11 @@ function needsHealing(mon) {
       return mon.pp?.[id] < pp;
     });
 }
+function moveLessonDetails(id) {
+  const { name, type, category, basePower, accuracy, pp, shortDesc } = Dex.moves.get(id);
+  return { id, name, type, category, basePower, accuracy, pp, shortDesc };
+}
+
 function view(r, p) {
   const other = (q) => ({
     id: q.id,
@@ -372,8 +377,8 @@ function view(r, p) {
         uid: learning.uid,
         pokemon: learning.name,
         move: learning.pendingMoves[0],
-        name: rules.moveName(learning.pendingMoves[0]),
-        known: learning.moves.map((id) => ({ id, name: rules.moveName(id) })),
+        ...moveLessonDetails(learning.pendingMoves[0]),
+        known: learning.moves.map(moveLessonDetails),
       } : null,
       enc: enc && {
         type: enc.type,
@@ -429,7 +434,10 @@ function beginRound(r, roll = randomInt) {
     } else {
       for (const pokemon of p.escapedPokemon || []) addCard(r, p, "cruel-trainer", pokemon);
       delete p.escapedPokemon;
-      for (const pokemon of p.unhappyPokemon || []) addCard(r, p, "unhappy", pokemon);
+      for (const pokemon of all(p)) {
+        if (pokemon.happiness < 50 && p.unhappyPokemon?.some(warning => warning.uid === pokemon.uid))
+          addCard(r, p, "unhappy", pokemon);
+      }
       delete p.unhappyPokemon;
       if (p.walks > 5 && roll(100) < 80) addCard(r, p, "fatigue");
       if (!p.battled && p.party.length && roll(100) < 20)
@@ -457,7 +465,7 @@ function resolveCard(r, p, id) {
   }
   if (card.type === "unhappy") {
     const target = all(p).find((m) => m.uid === card.target);
-    if (target) target.unhappyWarningOwner = p.id;
+    if (target?.happiness < 50) target.unhappyWarningOwner = p.id;
   }
   if (card.type === "restart-kit" && !p.restartKitUsed) {
     grantPokeBall(p);
@@ -481,11 +489,10 @@ function next(r) {
       delete p.quietCamp;
       delete p.duskExpedition;
       for (const m of all(p)) {
+        if (m.happiness >= 50) delete m.unhappyWarningOwner;
         m.happiness = Math.max(0, m.happiness - 2);
-        if (m.happiness >= 100) {
-          delete m.unhappyWarningOwner;
-        } else if (m.happiness < 50 && m.unhappyWarningOwner === p.id &&
-                   randomInt(100) < 100 - m.happiness) {
+        if (m.happiness >= 50) continue;
+        if (m.unhappyWarningOwner === p.id && randomInt(100) < 100 - m.happiness) {
           p.party = p.party.filter((x) => x !== m);
           p.box = p.box.filter((x) => x !== m);
           (p.escapedPokemon ??= []).push({ uid: m.uid, name: m.name });
@@ -495,8 +502,8 @@ function next(r) {
         }
       }
     }
-    r.phase = r.round >= r.rounds ? "final" : "resumo";
-  } else if (r.phase === "resumo") r.phase = "trocas";
+    r.phase = r.round >= r.rounds ? "final" : "trocas";
+  }
   else if (r.phase === "trocas") {
     r.offers = [];
     if (r.mini) startMinigame(r);
@@ -857,10 +864,10 @@ function payout(r, d, winners) {
   d.winners = winners.map(p => p.id);
   d.result = winners.length
     ? winners.map(p => p.name).join(" e ") + (winners.length === 1
-      ? " venceu e ganhou ₽ 800." : " venceram e ganharam ₽ 800 cada.")
+      ? " venceu e ganhou ₽ 250." : " venceram e ganharam ₽ 250 cada.")
     : d.battle ? "O duelo terminou empatado." : "Empate sem equipes disponíveis.";
   for (const winner of winners) {
-    winner.money += 800;
+    winner.money += 250;
     winner.wins++;
   }
   say(r, d.result);
@@ -906,7 +913,7 @@ function finishEncounter(r, p) {
   const won = v.winner === "p1";
   let message = "Sua equipe foi derrotada.";
   if (won) {
-    const money = enc.type === "wild" ? 80 : enc.type === "gym" ? 350 : 0;
+    const money = enc.type === "gym" ? 350 : 0;
     p.money += money;
     message = "Vitória!" + (money ? " Você ganhou ₽ " + money + "." : "") +
       applyXP(r, p, enc.target, v.own?.uid);
@@ -1252,7 +1259,7 @@ function execute(r, p, k, d = {}) {
     check(
       !p.done &&
         !p.enc &&
-        ["actions", "resumo", "trocas", "duelos"].includes(phase),
+        ["actions", "trocas", "duelos"].includes(phase),
       "Ainda há uma etapa pendente.",
     );
     if (phase === "duelos")
@@ -1272,7 +1279,7 @@ function execute(r, p, k, d = {}) {
     next(r);
     return;
   }
-  if (k === "box" && (phase === "actions" || phase === "resumo")) {
+  if (k === "box" && (phase === "actions" || phase === "trocas")) {
     check(!p.enc, "Termine o encontro.");
     const m = mon(p, d.uid),
       wasParty = p.party.includes(m);
@@ -1338,7 +1345,7 @@ function execute(r, p, k, d = {}) {
       return;
     }
     if (k === "move") {
-      check(!p.enc && p.actions > 0, "Sem ações disponíveis para viajar.");
+      check(!p.enc, "Termine o encontro antes de viajar.");
       if (d.loc === leagueIsland) {
         check(leaguePorts.includes(p.loc), "Embarque em Costa Serena ou Monte Azul para viajar à Ilha da Liga.");
         check(hasLeagueAccess(p), "Conquiste as 8 insígnias para entrar na Ilha da Liga.");
@@ -1349,7 +1356,6 @@ function execute(r, p, k, d = {}) {
       p.walks++;
       const from = p.loc;
       p.loc = d.loc;
-      p.actions--;
       p.travel = [...p.travel, { from, loc: d.loc, step: ++p.travelStep }].slice(-10);
       return;
     }
