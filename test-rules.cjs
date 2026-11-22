@@ -5,6 +5,13 @@ const rules = require("./rules.cjs");
 const data = require("./data/rules.json");
 const { Dex } = require("@pkmn/sim");
 
+test("gym rosters choose the most evolved stage available at the level", () => {
+  const stages = level => rules.gymCandidates("grass", level).get("bulbasaur").ids.map(id => rules.info({pokemonId:id}).slug);
+  assert.deepEqual(stages(10), ["bulbasaur"]);
+  assert.deepEqual(stages(20), ["ivysaur"]);
+  assert.deepEqual(stages(50), ["venusaur"]);
+});
+
 test("wild encounter guide excludes Dragonite below its evolution level", () => {
   const appears = level => ["campo", "floresta", "caverna", "praia", "lago", "neve", "vulcao", "cidade"]
     .some(biome => ["day", "dusk", "night"].some(period =>

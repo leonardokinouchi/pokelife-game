@@ -461,6 +461,7 @@ async function act(action, data = {}) {
     if (action === "catch")
       await animateCapture(data.ball, out.caught);
     if (action === "heal" && activeFacility === "center") await showHealing(out.state.you.party);
+    if (["pet", "box", "item", "unequip"].includes(action) && $("pokemonDetails").open) $("pokemonDetails").close();
     if (action === "move" && out.state.you.loc === leagueIsland) {
       drawer = "facility";
       activeFacility = "gym";
@@ -1260,26 +1261,28 @@ document.addEventListener("click", (e) => {
     d.uid = v(d.form + "Mon");
   }
   if (k === "duelTeam") d.uids = [...duelPicks];
+  if (k === "equipHeld") {
+    k = "item";
+    d.item = v("pokemonHeldChoice");
+  }
   if (k === "duelForfeit" && !window.confirm("Desistir do duelo? O outro lado vence.")) return;
   if (k === "groupMove" || k === "groupPick") {
-    if (busy) return;
+    const battle = state.duel?.battle;
+    if (busy || battlePlayback || !battle?.groups[d.slot]) return;
     groupDraft.slot = d.slot;
     groupDraft.move = k === "groupMove" ? d.move : "";
     if (k === "groupPick") {
       groupDraft.picks[d.slot] = d.command;
-      const next = state.duel.battle.groups.findIndex((group, index) => !groupPick(group, index));
-      groupDraft.slot = next < 0 ? d.slot : next;
+      const commands = battle.groups.map((group, index) => groupPick(group, index)?.command);
+      const next = commands.findIndex(command => !command);
+      if (next < 0) {
+        act("fight", {cmd:commands.join(", "), turn:battle.turn, version:state.duel.commandVersion});
+        return;
+      }
+      groupDraft.slot = next;
     }
     refreshGroupControls();
     return;
-  }
-  if (k === "groupFight") {
-    const battle = state.duel?.battle;
-    if (!battle || !battle.groups.length) return;
-    const commands = battle.groups.map((group, index) => groupPick(group, index)?.command);
-    if (commands.some(command => !command)) return;
-    k = "fight";
-    d.cmd = commands.join(", ");
   }
   if (k === "fight" && state.phase === "duelos") {
     d.turn = state.duel.battle.turn;
@@ -1395,6 +1398,7 @@ function initializeScreen() {
   const syncSoundSettings = () => {
     const { muted, music, effects } = gameAudio.preferences;
     $("sound").textContent = muted ? "♪ ×" : "♪";
+    $("postSound").textContent = $("sound").textContent;
     $("soundMuted").checked = muted;
     $("musicVolume").value = music;
     $("effectsVolume").value = effects;
@@ -1405,7 +1409,7 @@ function initializeScreen() {
   document.addEventListener("pointerdown", gameAudio.unlock, {capture:true, passive:true});
   document.addEventListener("keydown", gameAudio.unlock, {capture:true});
   document.addEventListener("click", gameAudio.unlock, {capture:true});
-  $("sound").onclick = () => {
+  $("sound").onclick = $("postSound").onclick = () => {
     syncSoundSettings();
     soundSettings.showModal();
   };
@@ -1710,7 +1714,6 @@ function renderGroupControls(battle) {
   const targets = group.options.filter(option => combatMenu === "move" && groupDraft.move && option.moveKey === groupDraft.move);
   if (targets.length) return renderTargetGrid(battle, slot, targets);
   const other = group.options.filter(option => !option.name && !option.disabled);
-  const allReady = groups.every((g,i) => groupPick(g,i));
   return '<div class="dual-commands"><div class="dual-command-grid" aria-label="Pokémon sob seu controle">' + tabs +
     '</div>' + (combatMenu === "move" && menu ? '<h3 class="dual-active-name">Golpes de ' + esc(group.name) +
       '</h3><div class="dual-command-grid dual-moves" aria-label="Golpes">' + menu + '</div>' : '') +
@@ -1719,8 +1722,7 @@ function renderGroupControls(battle) {
         ? '<button type="button" disabled>' + esc(option.label) + ' · Já selecionado</button>'
         : btn(option.kind === "switch" ? "Trocar · " + option.label : option.label, "groupPick", {slot, command:option.command})).join("") +
       '</div>' : '') +
-    partnerStatus + '<footer><button type="button" class="primary" data-action="groupFight"' +
-    (allReady ? '' : ' disabled') + '>Confirmar ações</button></footer></div>';
+    partnerStatus + '</div>';
 }
 
 function battleMoveButton(move, action, args, details) {
@@ -1891,8 +1893,8 @@ const minigameNames = {
 const miniInstructions = {
   alphabet: "Na sua vez, digite em até 12 segundos um Pokémon com a letra do centro. Acerte para avançar a letra e passar a vez no sentido horário. Sem resposta válida, você sai e a próxima pessoa tenta a mesma letra. Cada nome só vale uma vez.",
   market: "Calcule o total da compra e envie sua resposta. Um acerto rende ₽ 180.",
-  auction: "Há um lote por treinador. Dê um lance ou passe neste lote. Ao comprar um Pokémon, você sai da disputa. Sem lances, o jogo sorteia o lote entre quem ainda não comprou, por até ₽ 1.",
-  darkAuction: "Há um lote por treinador. Você vê só a silhueta até a venda. Ao comprar um Pokémon, você sai da disputa. Sem lances, o jogo sorteia o lote entre quem ainda não comprou, por até ₽ 1.",
+  auction: "Há um lote a menos que o número de treinadores. Dê um lance ou passe. Ao comprar um Pokémon, você sai da disputa. Sem lances, o jogo sorteia o lote entre quem ainda não comprou, por até ₽ 1.",
+  darkAuction: "Há um lote a menos que o número de treinadores. Você vê só a silhueta até a venda. Ao comprar um Pokémon, você sai da disputa. Sem lances, o jogo sorteia o lote entre quem ainda não comprou, por até ₽ 1.",
   race: "Aperte quando o obstáculo chegar à marca. Os obstáculos ficam mais próximos e exigem mais precisão. Um choque elimina você. Se mais de um jogador chegar ao fim, eles empatam.",
   million: "Responda a cinco perguntas em 45 segundos. Mais acertos valem o primeiro lugar. Em caso de empate, quem terminar mais rápido fica na frente. Os três primeiros dividem ₽ 1.000.",
   pokemonQuiz: "Identifique cinco Pokémon pelas silhuetas em 45 segundos. Quem acertar mais vence. Em caso de empate, quem terminar mais rápido fica na frente. Até três jogadores dividem ₽ 1.000.",
@@ -2849,12 +2851,14 @@ function renderDuelTeam(s) {
   }).join("");
   const roster = party.map(mon => {
     const order = duelPicks.indexOf(mon.uid);
-    return '<button type="button" class="duel-candidate" data-duel-pick="' + esc(mon.uid) +
+    return '<div class="duel-candidate-row"><button type="button" class="duel-candidate" data-duel-pick="' + esc(mon.uid) +
       '" data-focus="pick-' + esc(mon.uid) + '" aria-pressed="' + (order >= 0) + '"' +
       (locked ? " disabled" : "") + '>' + tokenMon(mon) + '<span><b>' + esc(mon.name) +
       '</b><small>Nv. ' + mon.level + '</small></span>' +
       '<span class="duel-choice-order" aria-hidden="true">' + (order >= 0 ? order + 1 : "+") +
-      '</span></button>';
+      '</span></button><button type="button" class="duel-summary-button" data-pokemon-details="' +
+      esc(mon.uid) + '" data-focus="summary-' + esc(mon.uid) + '" aria-label="Resumo de ' +
+      esc(mon.name) + '">Resumo</button></div>';
   }).join("");
   const trainers = selection.trainers.map(trainer => {
     const player = s.players.find(p => p.id === trainer.id);
@@ -3543,7 +3547,7 @@ function pokemonCenter(p) {
     '</div></div>' + (work ? '<footer class="center-work">' + work + '</footer>' : '') + '</section>';
 }
 
-function elitePanel(p, gym, reason, team) {
+function elitePanel(p, gym, reason) {
   const complete = p.elite >= 4;
   const interval = p.eliteRun != null;
   const wins = complete ? 4 : (p.eliteRun ?? 0);
@@ -3567,7 +3571,7 @@ function elitePanel(p, gym, reason, team) {
       '<div class="elite-match"><div class="elite-portrait">' + portrait + '</div><div class="elite-lineup">' +
       '<div class="elite-match-heading"><small>' + (interval ? "Intervalo · Batalha " : "Primeira batalha · ") +
       (interval ? (wins + 1) + " de 4" : "1 de 4") + '</small><h3>' + esc(gym.name) + '</h3></div>' +
-      '<div class="facility-list gym-team" aria-label="Equipe adversária">' + team + '</div></div></div>' +
+      '<p>' + gym.size + ' Pokémon · Nível de referência ' + gym.level + '</p></div></div>' +
       '<footer class="elite-actions">' + (interval ?
         '<p>' + uiIcon("backpack") + 'Use itens da Mochila neste intervalo sem gastar ações.</p>' : '') +
       '<div>' + (interval ? btn("Encerrar sequência", "abandonElite", {}, "elite-abandon") +
@@ -3661,14 +3665,11 @@ function facilityScreen() {
   if (activeFacility === "center") return pokemonCenter(p);
   if (activeFacility === "lab") return laboratoryScreen(p);
   const {gym, reason} = gymDetails(p);
-  const team = gym.team.map((name, index) => '<article class="facility-mon">' +
-    sprite({name, slug:name, spriteId:name}) +
-    '<div><b>' + esc(name[0].toUpperCase() + name.slice(1)) +
-    '</b><span>Nível ' + gym.levels[index] + '</span></div></article>').join("");
-  if (p.loc === leagueIsland) return elitePanel(p, gym, reason, team);
+  if (p.loc === leagueIsland) return elitePanel(p, gym, reason);
   return fullFacility("Ginásio · " + gym.name, '<div class="gym-opponent"><small>Ginásio</small>' +
-    '<h2>' + esc(gym.name) + '</h2></div>' +
-    '<div class="facility-list gym-team" aria-label="Equipe adversária">' + team + '</div>',
+    '<h2>' + esc(gym.name) + '</h2><p>' +
+    (gym.type ? 'Tipo ' + esc(moveTypes[gym.type] || gym.type) + ' · ' : '') +
+    'Nível de referência ' + gym.level + ' · ' + gym.size + ' Pokémon</p></div>',
     actionBalance(p) + (reason ? '<p>' + esc(reason) + '</p>' : btn("Desafiar · 1 ação", "gym", {}, "primary")),
     "gym", gym.portrait ? "npc/lideres/" + encodeURIComponent(gym.portrait) + ".png" : "");
 }
@@ -3703,11 +3704,14 @@ const facilityNames = {
 
 function jobPost(p) {
   return '<section class="post-screen" data-theme="post" aria-labelledby="postTitle">' +
-    '<div class="post-heading">' + uiIcon("backpack") +
-    '<h2 id="postTitle">Quadro de empregos</h2><span>' + esc(locName(p.loc)) + '</span>' + actionBalance(p) + '</div>' +
+    '<header class="post-heading"><span class="post-medallion">' + uiIcon("map-post") + '</span>' +
+    '<h2 id="postTitle">Quadro de empregos</h2><span class="post-location">' + uiIcon("map-pin") +
+    esc(locName(p.loc)) + '</span>' + actionBalance(p) + '</header>' +
     '<div class="post-layout"><aside class="post-reception">' +
-    '<img src="npc/posto.png" alt="Atendente do Posto de Trabalho"></aside>' +
-    '<div class="post-vacancies">' + jobBoard(p) + '</div></div></section>';
+    '<img src="npc/posto.png" alt="Atendente do Posto de Trabalho"><span class="post-medallion">' +
+    uiIcon("ball") + '</span></aside>' +
+    '<div class="post-vacancies">' + jobBoard(p) + '</div></div>' +
+    '<div class="post-ornament" aria-hidden="true"><span class="post-medallion">' + uiIcon("ball") + '</span></div></section>';
 }
 
 function jobBoard(p, facility) {
@@ -3732,9 +3736,9 @@ function jobBoard(p, facility) {
     const action = active ? '<small class="post-current">Emprego atual</small>' :
       requirement.met && (job.facility !== "lab" || state.laboratory) ? btn(label, "hire", { job: id }) :
       '<button type="button" disabled>' + label + '</button>';
-    const icons = { store:"▣", center:"+", wild:"❧", lab:"✦" };
-    const heading = '<div class="post-job-title"><i aria-hidden="true">' + icons[job.facility] +
-      '</i><b>' + esc(job.name) + '</b></div>';
+    const icons = { store:"map-post", center:"map-center", wild:"footprints", lab:"map-lab" };
+    const heading = '<div class="post-job-title">' + uiIcon(icons[job.facility]) +
+      '<b>' + esc(job.name) + '</b></div>';
     return '<article data-job="' + id + '">' +
       heading + '<span>Grau ' + (job.rank + 1) + ' · ' + esc(workplace) + '</span><strong class="job-pay">₽ ' + job.pay + '</strong>' +
       '<div class="post-requirement">' + (requirement.text === "Nenhum" ? "" :

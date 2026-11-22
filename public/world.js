@@ -22,6 +22,21 @@
   const neighbors = (id) => edges.flatMap(([a, b]) =>
     a === id ? [b] : b === id ? [a] : [],
   );
+  function routeBetween(from, to) {
+    if (from === to) return null;
+    const paths = new Map([[from, []]]);
+    const queue = [from];
+    for (const current of queue) {
+      for (const next of neighbors(current)) {
+        if (paths.has(next) || (next === leagueIsland && next !== to)) continue;
+        const path = [...paths.get(current), next];
+        if (next === to) return path;
+        paths.set(next, path);
+        queue.push(next);
+      }
+    }
+    return null;
+  }
   const avatars = {
     mar: "Mar", brasa: "Brasa", cedro: "Cedro", geada: "Geada",
     jade: "Jade", aurora: "Aurora", areia: "Areia", noite: "Noite", vento: "Vento",
@@ -30,7 +45,7 @@
   const maxPlayers = 12;
   const validPlayerCount = (count) => count >= 2 && count <= maxPlayers && count % 2 === 0;
   const actionPeriod = actions => actions >= 6 ? "day" : actions >= 4 ? "dusk" : "night";
-  const world = { actionPeriod, edges, neighbors, avatars, maxPlayers, validPlayerCount, leagueIsland, leaguePorts, hasLeagueAccess, hasLaboratory };
+  const world = { actionPeriod, edges, neighbors, routeBetween, avatars, maxPlayers, validPlayerCount, leagueIsland, leaguePorts, hasLeagueAccess, hasLaboratory };
   if (typeof module === "object" && module.exports) module.exports = world;
   else root.ExpeditionWorld = world;
 })(globalThis);

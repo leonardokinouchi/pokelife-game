@@ -28,4 +28,80 @@ th,td{padding:4px 8px;text-align:right;border-bottom:1px solid #45645a}
 th:first-child,td:first-child{text-align:left}
 td button{min-height:30px;background:transparent;color:var(--text);border:0;padding:2px 0;text-align:left;text-decoration:underline;text-decoration-color:#729d8d}
 details{margin-top:10px}summary{color:var(--gold);cursor:pointer}
+.pokedex-filters label:first-child{flex:1 1 200px}
+.pokedex-table{max-height:520px}
+.pokedex-table table{min-width:520px}
+.pokedex-table :is(th,td){text-align:left}
+.pokedex-table td small{display:block;color:var(--muted)}
+.pokedex-table select{min-height:34px}
+.pokedex-tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}
+.pokedex-tools #dexExport{margin-left:auto}
+.pokedex-tools button:disabled{opacity:.5;cursor:default}
 @media(max-width:720px){.layout{grid-template-columns:minmax(0,1fr)}nav{position:static;display:flex;flex-wrap:wrap;border:0;padding:0}.filters label{flex:1 1 130px}}
+
+:root {
+  --base: #10252b;
+  --paper: #17343c;
+  --edge: #41636a;
+  --text: #f9f1de;
+  --muted: #c3dbd8;
+  --gold: #f0cc8e;
+}
+body { background: radial-gradient(ellipse at 70% 0, #1f494b, transparent 46rem), var(--base); }
+.wrap { width: min(1320px, 100% - 36px); }
+.hero {
+  padding: clamp(22px, 5vw, 56px) 0;
+  background: linear-gradient(90deg, #10262bf7 8%, #142c31d0 45%, #16363827), url("scenes/city-pixel.png") center 42% / cover;
+  border-bottom-color: #789285;
+}
+.hero .eyebrow { margin-top: 20px; font-size: .75rem; color: #e7ca91; }
+.guide-back { color: #e5eee4; text-underline-offset: 4px; font-size: .88rem; }
+.hero-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.hero-links a { padding: 6px 11px; border: 1px solid #8baa94; border-radius: 6px; background: #1e3c42; text-decoration: none; }
+.hero-links a:first-child { background: var(--gold); color: #183337; border-color: var(--gold); font-weight: 700; }
+.layout { grid-template-columns: 180px minmax(0, 1fr); align-items: start; gap: clamp(12px, 2vw, 27px); }
+.layout nav { border: 1px solid var(--edge); border-radius: 11px; padding: 7px; background: #16323a; }
+.layout nav a { border-radius: 5px; font-size: .87rem; }
+section { border-radius: 14px; box-shadow: 0 8px 20px #09191e42; }
+section > h2 { padding-bottom: 9px; border-bottom: 1px solid #45676a; }
+section p { color: var(--muted); }
+input, select { background: #122b34; color: var(--text); border-color: #5b8084; }
+input::placeholder { color: #a6c2c3; }
+.filters { gap: 8px 10px; }
+.filters label { flex: 1 1 115px; }
+.filters label select { min-width: 0; }
+#encounterSearch { max-width: 36rem; }
+.periods > * { background: #264950; }
+.table-scroll { background: #142e36; }
+thead { background: #294a54; z-index: 1; }
+th { color: #f6ddb0; font-size: .82rem; }
+td, th { border-bottom-color: #365862; }
+tbody tr:nth-child(even) { background: #1c3941; }
+.pokedex-table td { padding: 6px 10px; vertical-align: middle; }
+.pokedex-table .dex-identity { display: flex; align-items: center; min-height: 60px; gap: 8px; }
+.dex-identity img { flex: 0 0 auto; object-fit: scale-down; image-rendering: pixelated; border-radius: 8px; background: #264951; }
+.dex-identity small { font-size: .73rem; }
+.dex-rarity { display: inline-block; padding: 1px 7px; border: 1px solid #738b83; border-radius: 999px; font-weight: 700; font-size: .73rem; }
+.dex-rarity[data-rarity="uncommon"] { color: #b7e9fc; background: #274e66; border-color: #6a9fb8; }
+.dex-rarity[data-rarity="rare"] { color: #ffde9e; background: #5a422a; border-color: #aa8c57; }
+.dex-variants { display: flex; align-items: center; gap: 7px; width: fit-content; }
+.dex-variants input { accent-color: var(--gold); width: 16px; min-height: 16px; }
+.pokedex-tools button:not(:last-child) { background: #253f48; color: var(--text); }
+@media (max-width: 720px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .wrap { width: calc(100% - 22px); }
+  .hero { background-position: center; }
+}
+@media (max-width: 560px) {
+  .pokedex-table table { display: block; min-width: 0; }
+  .pokedex-table thead { clip-path: inset(50%); position: absolute; width: 1px; height: 1px; overflow: hidden; }
+  .pokedex-table tbody { display: grid; gap: 1px; }
+  .pokedex-table tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; padding: 6px; }
+  .pokedex-table td { min-width: 0; padding: 3px; border: 0; }
+  .pokedex-table .dex-identity { min-height: 46px; gap: 4px; }
+  .dex-identity img { width: 38px; height: 38px; }
+  .dex-identity b { overflow-wrap: anywhere; }
+  .pokedex-table td:nth-child(3)::before, .pokedex-table td:nth-child(4)::before { color: var(--muted); font-size: .74rem; }
+  .pokedex-table td:nth-child(3)::before { content: "Bioma"; }
+  .pokedex-table td:nth-child(4)::before { content: "Horário"; }
+}

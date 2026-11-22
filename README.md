@@ -28,7 +28,7 @@ Após o primeiro deploy, abra o domínio em duas abas independentes, crie uma sa
 ## Primeiros passos no jogo
 
 1. Em Porto Aurora, abra o Posto de Trabalho, assuma uma vaga de vendedor ou auxiliar de enfermagem e vá ao local do emprego para trabalhar. O primeiro turno paga ₽ 100.
-2. Na loja, compre uma Poké Bola por ₽ 100. Clique em um destino ligado por uma rota a partir da sua posição. Viajar é grátis, e os avatares de todos os jogadores mostram as viagens no mapa.
+2. Na loja, compre uma Poké Bola por ₽ 100. Clique em qualquer destino conectado para seguir pela rota mais curta. Viajar é grátis, e os avatares de todos os jogadores mostram as viagens no mapa.
 3. Viaje até um bioma e explore. Antes da primeira captura, você pode lançar bolas ou fugir. Lançar uma bola pode falhar. Com Pokémon aptos na equipe, a exploração inicia uma batalha.
 4. Use o centro para recuperar HP, PP e condições de status. Você pode organizar até seis Pokémon na equipe, escolher seu líder e guardar os demais na box.
 

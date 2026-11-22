@@ -16,6 +16,22 @@ function pokemon(species, moves, level = 10, hp = 30) {
 }
 const seed = [1, 2, 3, 4];
 
+test("CPU prefers type advantage and avoids immune moves", () => {
+  for (const [target, moves, expected] of [
+    ["Charmander", ["tackle", "water-gun"], "Water Gun"],
+    ["Sandshrew", ["thunderbolt", "tackle"], "Tackle"],
+  ]) {
+    const battle = new BattleSession({
+      p1:[pokemon(target, ["protect"])],
+      p2:[pokemon("Squirtle", moves)],
+      cpu:true,
+      seed,
+    });
+    battle.choose("p1", "move 1");
+    assert.ok(battle.view("p1").log.includes("Squirtle usou " + expected + "."));
+  }
+});
+
 test("PvP waits for both players, rejects invalid inputs and syncs HP after switches", () => {
   const party = [
     pokemon("Squirtle", ["water-gun"]),

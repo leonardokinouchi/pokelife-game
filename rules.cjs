@@ -264,17 +264,43 @@ const timedHabitats = Object.fromEntries(Object.entries(pools).map(([biome, pool
 const themedEncounterChance = .6;
 
 const encounterLevels = new Map();
-function minimumEncounterLevel(mon, visiting = new Set()) {
+const gymLevels = new Map();
+function minimumEncounterLevel(mon, visiting = new Set(), gym = false) {
   if (!mon?.parent || visiting.has(mon.id)) return 1;
-  if (encounterLevels.has(mon.id)) return encounterLevels.get(mon.id);
+  const cache = gym ? gymLevels : encounterLevels;
+  if (cache.has(mon.id)) return cache.get(mon.id);
   const path = new Set(visiting).add(mon.id);
   const routes = catalog.evolution.filter(rule => rule.evolved_species_id === mon.speciesId &&
     (rule.targetPokemon ? rule.targetPokemon === mon.id : mon.isDefault));
-  const level = routes.length ? Math.min(...routes.map(rule => Math.max(18,
-    rule.minimum_level || 1, minimumEncounterLevel(byId.get(rule.requiredPokemon) || defaults.get(rule.parent), path)))) :
-    Math.max(18, minimumEncounterLevel(defaults.get(mon.parent), path));
-  encounterLevels.set(mon.id, level);
+  const level = routes.length ? Math.min(...routes.map(rule => Math.max(gym ? 1 : 18,
+    rule.minimum_level || 18, minimumEncounterLevel(byId.get(rule.requiredPokemon) || defaults.get(rule.parent), path, gym)))) :
+    Math.max(18, minimumEncounterLevel(defaults.get(mon.parent), path, gym));
+  cache.set(mon.id, level);
   return level;
+}
+
+const gymPools = new Map();
+function gymCandidates(type, level) {
+  const key = type + ":" + level;
+  if (gymPools.has(key)) return gymPools.get(key);
+  const families = new Map();
+  for (const mon of defaults.values()) {
+    const dex = dexById.get(mon.id);
+    if (!dex || mon.rare || !mon.types.includes(type) ||
+        dex.tags?.some(tag => tag === "Paradox" || tag === "Ultra Beast") ||
+        (level < 25 && dex.bst >= 510) || minimumEncounterLevel(mon, new Set(), true) > level) continue;
+    const family = familyRoot(mon);
+    let depth = 0, current = mon;
+    while (defaults.has(current.parent)) { depth++; current = defaults.get(current.parent); }
+    const best = families.get(family);
+    if (!best || depth >= best.depth) {
+      const entry = !best || depth > best.depth ? {depth, ids:[]} : best;
+      entry.ids.push(mon.id);
+      families.set(family, entry);
+    }
+  }
+  gymPools.set(key, families);
+  return families;
 }
 
 function evolutionDetails(mon) {
@@ -563,6 +589,7 @@ module.exports = {
   captureGuide,
   silhouetteSpecies,
   encounterGuide,
+  gymCandidates,
   evolutionDetails,
   xpInfo,
   gainXP,

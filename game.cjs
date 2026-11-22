@@ -7,14 +7,16 @@ const { arcadeGames, newArcade, beginArcade, arcadeAction, arcadeView } = requir
 const { newAlphabet, beginAlphabet, answerAlphabet, alphabetView } = require("./alphabet.cjs");
 const minigames = ["market", "auction", "race", "million", "darkAuction", "pokemonQuiz", "wires", "guess", ...arcadeGames, "alphabet"];
 const archivedMinigames = new Set(["market", "elements", "claim"]);
-const eligibleMinigames = count => minigames.filter(kind =>
-  !archivedMinigames.has(kind) && (!isPairMinigame(kind) || validPlayerCount(count)));
 const isAuction = kind => kind === "auction" || kind === "darkAuction";
+const eligibleMinigames = (count, canAuction = true) => minigames.filter(kind =>
+  !archivedMinigames.has(kind) && (!isPairMinigame(kind) || validPlayerCount(count)) &&
+  (!isAuction(kind) || canAuction));
+const roomMinigames = r => eligibleMinigames(r.players.length, r.players.every(p => p.money > 100));
 const auctionDuration = 20000;
 const auctionRevealDuration = 1800;
 const duelLevel = 50;
 
-const { actionPeriod, neighbors, avatars, validPlayerCount, leagueIsland, leaguePorts, hasLeagueAccess, hasLaboratory } = require("./public/world.js");
+const { actionPeriod, routeBetween, avatars, validPlayerCount, leagueIsland, leaguePorts, hasLeagueAccess, hasLaboratory } = require("./public/world.js");
 
 const BIOMES = [
   "campo",
@@ -266,6 +268,33 @@ function gymLevels(r) {
   return r.gymLevels ??= rollGymLevels();
 }
 
+function rollGyms() {
+  const types = ["Normal","Fire","Water","Electric","Grass","Ice","Fighting","Poison","Ground",
+    "Flying","Psychic","Bug","Rock","Ghost","Dragon","Dark","Steel","Fairy"];
+  const leaders = LEADERS.slice(0, 8);
+  return Array.from({length:8}, (_, index) => {
+    const leader = leaders.splice(randomInt(leaders.length), 1)[0];
+    const base = leaderBaseLevel(index);
+    const levels = Array.from({length:2 + Math.floor(index / 2)}, () => base + randomInt(-3, 3));
+    const eligible = types.filter(type => levels.every(level =>
+      rules.gymCandidates(type.toLowerCase(), level).size >= levels.length));
+    const type = eligible[randomInt(eligible.length)];
+    types.splice(types.indexOf(type), 1);
+    const used = new Set();
+    const team = levels.map(level => {
+      const choices = [...rules.gymCandidates(type.toLowerCase(), level)].filter(([family]) => !used.has(family));
+      const [family, {ids}] = choices[randomInt(choices.length)];
+      used.add(family);
+      return ids[randomInt(ids.length)];
+    });
+    return {name:leader.name, portrait:leader.portrait, type, levels, team};
+  });
+}
+
+function gymAt(r, index) {
+  return r.gymRoster?.[index] ?? {...LEADERS[index], levels:gymLevels(r)[index]};
+}
+
 function newRoom(code, p) {
   return {
     code,
@@ -279,6 +308,7 @@ function newRoom(code, p) {
     cardIndex: 0,
     players: [p],
     gymLevels: rollGymLevels(),
+    gymRoster: rollGyms(),
     offers: [],
     duels: [],
     logs: [],
@@ -343,7 +373,7 @@ function view(r, p) {
   return {
     code: r.code,
     testLobby: !!r.testLobby,
-    testOptions: r.testLobby && r.phase === "lobby" ? eligibleMinigames(r.players.length) : null,
+    testOptions: r.testLobby && r.phase === "lobby" ? roomMinigames(r) : null,
     cards: r.cards.slice(0, r.cardIndex + 1),
     cardCount: r.cards.length,
     activeCard: r.phase === "cards" ? r.cards[r.cardIndex].id : null,
@@ -354,7 +384,10 @@ function view(r, p) {
     mult: r.mult,
     mini: r.mini,
     logs: r.logs,
-    gyms: LEADERS.map((leader, i) => ({ ...leader, level: leaderBaseLevel(i), levels: gymLevels(r)[i] })),
+    gyms: LEADERS.map((_, index) => {
+      const {name, portrait, type, team} = gymAt(r, index);
+      return {name, portrait, type, size:team.length, level:leaderBaseLevel(index)};
+    }),
     jobs: Object.fromEntries(Object.entries(JOBS).map(([id, job]) => [id, {
       name: job.name,
       facility: job.facility,
@@ -377,6 +410,7 @@ function view(r, p) {
     players: r.players.map(other),
     you: {
       ...rest,
+      boxCapacity: boxCapacity(p),
       evolutionsByPokemon: Object.fromEntries([...new Map(
         [...p.party, ...p.box].map(mon => [mon.pokemonId, mon])).values()]
         .map(mon => [mon.pokemonId, rules.evolutionDetails(mon)])),
@@ -408,6 +442,10 @@ function view(r, p) {
       selection: duel.picks && !duel.battle && !duel.result ? {
         size: r.duelFormat.selected.size,
         level: duelLevel,
+        summaries: Object.fromEntries(p.party.map(mon => [mon.uid, {
+          stats: rules.copyForBattleAtLevel(mon, duelLevel).stats,
+          moves: mon.moves.map(moveLessonDetails),
+        }])),
         leads: r.duelFormat.selected.mode === "doubles" ? 2 : 1,
         picked: duel.picks[p.id] || null,
         trainers: members.map((id, index) => ({
@@ -422,7 +460,7 @@ function view(r, p) {
     miniReady: r.phase === "minigame" ? r.miniReady : null,
     race: r.phase === "minigame" && r.minigame === "race" ? r.race : null,
     auction: r.phase === "minigame" && isAuction(r.minigame) ? auctionView(r) : null,
-    minigameOptions: r.phase === "minigame" ? eligibleMinigames(r.players.length) : null,
+    minigameOptions: r.phase === "minigame" ? r.minigameOptions ?? eligibleMinigames(r.players.length) : null,
     pairGame: r.phase === "minigame" && isPairMinigame(r.minigame) ? pairView(r, p) : null,
     arcade: r.phase === "minigame" && arcadeGames.includes(r.minigame) ? arcadeView(r, p) : null,
     alphabet: r.phase === "minigame" && r.minigame === "alphabet" ? alphabetView(r.alphabet) : null,
@@ -536,10 +574,11 @@ function next(r) {
   }
 }
 function startMinigame(r, kind) {
+  const options = roomMinigames(r);
   if (kind === undefined) {
-    const options = eligibleMinigames(r.players.length);
     kind = options[randomInt(options.length)];
   }
+  r.minigameOptions = options;
   r.phase = "minigame";
   r.minigame = kind;
   r.miniReady = [];
@@ -718,7 +757,7 @@ function newAuction(r) {
   });
   const average = levels.length ? levels.reduce((sum, level) => sum + level, 0) / levels.length : 5;
   return {
-    lots: r.players.map(() => rules.auctionPokemon(average)),
+    lots: Array.from({length:r.players.length - 1}, () => rules.auctionPokemon(average)),
     results: [], amount: 0, leader: null, passed: [], deadline: null, nextAt: null,
   };
 }
@@ -969,8 +1008,9 @@ function finishEncounter(r, p) {
 }
 function takeAction(r, p, k, d) {
   const eliteInterval = p.eliteRun != null;
+  const freeItemAction = k === "item" || k === "unequip";
   check(
-    !p.done && !p.enc && (p.actions > 0 || eliteInterval || k === "item"),
+    !p.done && !p.enc && (p.actions > 0 || eliteInterval || freeItemAction),
     "Conclua o encontro ou avance o turno.",
   );
   const town = /^(city|village)/.test(p.loc);
@@ -1057,9 +1097,8 @@ function takeAction(r, p, k, d) {
       "É preciso ter uma equipe apta e um desafio disponível.",
     );
     const leaderIndex = elite ? 8 + (p.eliteRun ?? 0) : rank - 1;
-    const levels = gymLevels(r)[leaderIndex];
-    const team = LEADERS[leaderIndex].team.map((species, index) =>
-      rules.createMon(species, levels[index]));
+    const gym = gymAt(r, leaderIndex);
+    const team = gym.team.map((species, index) => rules.createMon(species, gym.levels[index]));
     p.enc = {
       type: elite ? "elite" : "gym",
       period: actionPeriod(p.actions),
@@ -1089,6 +1128,12 @@ function takeAction(r, p, k, d) {
     if (!p.dex.includes(m.speciesId)) p.dex.push(m.speciesId);
     p.notice = m.name + " ficou mais feliz.";
     if (bonus) p.notice += " Acampamento tranquilo concluído!";
+  } else if (k === "unequip") {
+    const m = mon(p, d.uid);
+    check(m.heldItem, "Este Pokémon não tem item equipado.");
+    p.items[m.heldItem] = (p.items[m.heldItem] || 0) + 1;
+    m.heldItem = "";
+    p.notice = "Item devolvido à Mochila.";
   } else if (k === "item") {
     const m = mon(p, d.uid);
     check(Object.hasOwn(SHOP, d.item) && (p.items[d.item] || 0) > 0, "Item indisponível.");
@@ -1109,7 +1154,7 @@ function takeAction(r, p, k, d) {
     p.items[d.item]--;
     p.notice = "Item utilizado.";
   } else throw Error("Ação desconhecida.");
-  if (!eliteInterval && k !== "item") p.actions--;
+  if (!eliteInterval && !freeItemAction) p.actions--;
 }
 function asset(p, a) {
   check(a && ["money", "item", "mon"].includes(a.kind), "Oferta inválida.");
@@ -1246,7 +1291,7 @@ function execute(r, p, k, d = {}) {
     check(new Set(r.players.map((q) => q.avatar)).size === r.players.length,
       "Cada treinador precisa de um personagem diferente.");
     if (r.testLobby) {
-      check(eligibleMinigames(r.players.length).includes(d.kind), "Escolha um minigame disponível.");
+      check(roomMinigames(r).includes(d.kind), "Escolha um minigame disponível.");
       startMinigame(r, d.kind);
       return;
     }
@@ -1285,7 +1330,7 @@ function execute(r, p, k, d = {}) {
       p.notice = "Você encerrou a sequência da Elite Four.";
       return;
     }
-    check(k === "gym" || k === "item", "Continue ou encerre a sequência da Elite Four.");
+    check(["gym", "item", "unequip"].includes(k), "Continue ou encerre a sequência da Elite Four.");
   }
   if (k === "finish") {
     check(
@@ -1381,14 +1426,16 @@ function execute(r, p, k, d = {}) {
       if (d.loc === leagueIsland) {
         check(leaguePorts.includes(p.loc), "Embarque em Costa Serena ou Monte Azul para viajar à Ilha da Liga.");
         check(hasLeagueAccess(p), "Conquiste as 8 insígnias para entrar na Ilha da Liga.");
-      } else {
-        check(neighbors(p.loc).includes(d.loc), "Escolha um destino ligado por uma rota.");
       }
+      const route = routeBetween(p.loc, d.loc);
+      check(route, "Escolha um destino ligado por uma rota.");
       p.shopVisit = null;
-      p.walks++;
-      const from = p.loc;
-      p.loc = d.loc;
-      p.travel = [...p.travel, { from, loc: d.loc, step: ++p.travelStep }].slice(-10);
+      for (const loc of route) {
+        p.travel.push({ from: p.loc, loc, step: ++p.travelStep });
+        p.loc = loc;
+      }
+      p.walks += route.length;
+      p.travel = p.travel.slice(-10);
       return;
     }
     if (k === "hire") {

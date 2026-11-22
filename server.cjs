@@ -262,6 +262,8 @@ async function handleRequest(req, res) {
     const { pathname, searchParams } = new URL(req.url, "http://localhost");
     if (req.method === "GET" && pathname === "/api/guide/species")
       return reply(res, 200, captureGuide());
+    if (req.method === "GET" && pathname === "/api/guide/spawn-catalog")
+      return reply(res, 200, require("./data/spawn-catalog-preview.json"));
     if (req.method === "GET" && pathname === "/api/guide/encounters") {
       const biome = searchParams.get("biome"), period = searchParams.get("period");
       const level = Number(searchParams.get("level"));

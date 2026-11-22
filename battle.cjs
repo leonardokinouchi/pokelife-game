@@ -156,6 +156,39 @@ function exhaustedSlots(pokemon, active) {
   return pokemon.moveSlots.filter(move => move.pp === 0);
 }
 
+function typeMultiplier(type, target) {
+  const types = target.getTypes();
+  if (!Dex.getImmunity(type, types) ||
+      (type === "Ground" && target.hasAbility("levitate") && !target.battle.field.getPseudoWeather("gravity")))
+    return 0;
+  return 2 ** Dex.getEffectiveness(type, types);
+}
+
+function cpuMoveScore(battle, choice, attacker, defender) {
+  const index = Number(choice.command.split(" ")[1]) - 1;
+  const move = Dex.moves.get(attacker.side.activeRequest?.active?.[0]?.moves[index]?.id || "struggle");
+  const health = attacker.hp / attacker.maxhp;
+  if (move.heal) return health < .55 ? 75 : 0;
+  const effectiveness = move.ignoreImmunity ? 1 : typeMultiplier(move.type, defender);
+  if (!effectiveness) return -100;
+  if (move.category === "Status") {
+    if (move.status && !defender.status) return 22;
+    if (move.boosts && Object.entries(move.boosts).some(([stat, amount]) => amount > 0 && attacker.boosts[stat] < 1))
+      return health >= .65 ? 14 : 0;
+    return 1;
+  }
+  const physical = move.category === "Physical";
+  const attack = attacker.getStat(physical ? "atk" : "spa", false, true);
+  const defense = defender.getStat(physical ? "def" : "spd", false, true);
+  const accuracy = move.accuracy === true ? 1 : move.accuracy / 100;
+  const stab = attacker.hasType(move.type) ? 1.5 : 1;
+  const strikes = Array.isArray(move.multihit) ? (move.multihit[0] + move.multihit[1]) / 2 : move.multihit || 1;
+  const damage = (move.basePower || 40) * attack / defense * effectiveness * accuracy * stab * strikes;
+  const estimated = ((2 * attacker.level / 5 + 2) * damage / 50 + 2);
+  return damage + (estimated >= defender.hp ? 40 + Math.max(0, move.priority) * 14 : 0) +
+    (choice.command.endsWith(" mega") ? 5 : 0) + battle.random(5);
+}
+
 class BattleSession {
   constructor({ p1, p2, p3, p4, cpu = false, seed, mode = "solo" }) {
     this.cpu = cpu;
@@ -387,6 +420,16 @@ class BattleSession {
       const moves = options.filter((choice) => choice.kind === "move");
       const optionsToTry = (moves.length ? moves : options).slice();
       this.engine.prng.shuffle(optionsToTry);
+      const active = this.engine.p2.active[0], opponent = this.engine.p1.active[0];
+      if (active && opponent && !opponent.fainted) {
+        const score = choice => {
+          if (choice.kind === "move") return cpuMoveScore(this.engine, choice, active, opponent);
+          const reserve = this.engine.p2.pokemon[Number(choice.command.split(" ")[1]) - 1];
+          return reserve ? Math.max(...reserve.getTypes().map(type => typeMultiplier(type, opponent))) : 0;
+        };
+        const scores = new Map(optionsToTry.map(choice => [choice, score(choice)]));
+        optionsToTry.sort((a, b) => scores.get(b) - scores.get(a));
+      }
       if (
         !optionsToTry.some((choice) => this.engine.choose("p2", choice.command))
       ) {

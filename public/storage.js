@@ -5,9 +5,28 @@ function openPokemonDetails(uid) {
   const mon = [...state.you.party, ...state.you.box].find(pokemon => pokemon.uid === uid);
   if (!mon) return;
   const dialog = $("pokemonDetails");
+  const selection = state.duel?.selection;
+  const duel = selection?.summaries?.[uid];
   const stats = {hp:"PV", atk:"Ataque", def:"Defesa", spa:"Ataque Esp.", spd:"Defesa Esp.", spe:"Velocidade"};
   const itemName = id => state.shop[id]?.name || id.replaceAll("-", " ");
+  const canChangeItem = state.phase === "actions" && !state.you.done && !state.you.enc;
+  const heldChoices = Object.entries(state.you.items).filter(([id, count]) =>
+    count > 0 && state.shop[id]?.held && id !== mon.heldItem);
+  const heldControls = canChangeItem ? '<section class="pokemon-held-controls" aria-label="Equipamento">' +
+    (heldChoices.length ? '<label>Item da Mochila' + select("pokemonHeldChoice", heldChoices.map(([id, count]) =>
+      opt(id, itemName(id) + " ×" + count)).join("")) + '</label>' +
+      btn(mon.heldItem ? "Trocar item" : "Equipar item", "equipHeld", {uid:mon.uid}) : "") +
+    (mon.heldItem ? btn("Remover item", "unequip", {uid:mon.uid}) : "") + '</section>' : "";
   const evolutions = state.you.evolutionsByPokemon?.[mon.pokemonId] || [];
+  const canPet = state.phase === "actions" && !state.you.done && !state.you.enc && state.you.actions > 0 &&
+    state.you.eliteRun == null;
+  const inBoxPanel = personalDrawer === "box" && (state.phase === "actions" || state.phase === "resumo") &&
+    !state.you.enc;
+  const inParty = state.you.party.includes(mon);
+  const roomToMove = inParty ? state.you.box.length < state.you.boxCapacity : state.you.party.length < 6;
+  const transfer = inBoxPanel ? (roomToMove
+    ? btn(inParty ? "Guardar na Box" : "Colocar na equipe", "box", {uid:mon.uid})
+    : '<small>' + (inParty ? "Box cheia." : "Equipe cheia. Arraste sobre um Pokémon para trocar.") + '</small>') : "";
   const requirements = rule => [
     rule.minimum_level && "Nível " + rule.minimum_level,
     rule.item && "Usar " + itemName(rule.item),
@@ -27,23 +46,45 @@ function openPokemonDetails(uid) {
     rule.usedMove && "Usar " + rule.usedMove.replaceAll("-", " ") + " " + (rule.minimum_move_count || 1) + " vez(es)",
     rule.minimum_damage_taken && "Receber " + rule.minimum_damage_taken + " de dano",
   ].filter(Boolean).join(" · ");
-  dialog.innerHTML = '<header><div class="pokemon-details-sprite">' + tokenMon(mon) +
-    '</div><div><h2 id="pokemonDetailsTitle">' + esc(mon.name) + '</h2><p>Nv. ' + mon.level +
-    ' · ' + esc(mon.types.map(type => moveTypes[type[0].toUpperCase() + type.slice(1)] || type).join(" / ")) +
-    '</p></div><form method="dialog"><button aria-label="Fechar">×</button></form></header>' +
-    '<div class="pokemon-details-info"><section><h3>Atributos</h3><dl class="pokemon-detail-stats">' +
-    Object.entries(stats).map(([key,label]) => '<div><dt>' + label + '</dt><dd>' +
-      (key === "hp" ? mon.hp + "/" + mon.maxhp : mon.stats[key]) + '</dd></div>').join("") +
-    '</dl><dl class="pokemon-detail-stats"><div><dt>Natureza</dt><dd>' + esc(mon.nature || "Neutra (padrão)") +
+  const hp = duel ? duel.stats.hp : mon.hp;
+  const maxhp = duel ? duel.stats.hp : mon.maxhp;
+  const types = mon.types.map(type => {
+    const key = type[0].toUpperCase() + type.slice(1);
+    return '<span data-type="' + esc(type) + '">' + esc(moveTypes[key] || type) + '</span>';
+  }).join("");
+  dialog.innerHTML = '<header class="pokemon-summary-hero"><div class="pokemon-details-sprite">' + tokenMon(mon) +
+    '</div><div class="pokemon-summary-identity"><p>' +
+    (duel ? "Nível " + selection.level + " no duelo" : "Nível " + mon.level) +
+    '</p><h2 id="pokemonDetailsTitle">' + esc(mon.name) + '</h2><div class="pokemon-summary-types">' +
+    types + '</div><div class="pokemon-summary-health"><progress aria-label="PV" value="' + hp +
+    '" max="' + maxhp + '"></progress><b>' + hp + ' / ' + maxhp + ' PV</b></div></div>' +
+    '<form method="dialog"><button aria-label="Fechar">×</button></form></header>' +
+    '<div class="pokemon-details-info"><section class="pokemon-summary-panel"><h3>Atributos</h3><dl class="pokemon-detail-stats">' +
+    Object.entries(stats).map(([key,label]) => {
+      const value = (duel?.stats || mon.stats)[key];
+      return '<div><dt>' + label + '</dt><dd>' + value + '</dd></div>';
+    }).join("") + '</dl><dl class="pokemon-detail-stats pokemon-summary-traits">' +
+    '<div><dt>Natureza</dt><dd>' + esc(mon.nature || "Neutra") +
     '</dd></div><div><dt>Habilidade</dt><dd>' + esc(mon.ability || "—") +
-    '</dd></div><div><dt>Felicidade</dt><dd>' + mon.happiness + '/255</dd></div><div><dt>Item equipado</dt><dd>' +
-    esc(mon.heldItem ? itemName(mon.heldItem) : "—") + '</dd></div></dl></section>' +
-    '<section><h3>Evoluções</h3>' + (evolutions.length ? '<ul>' + evolutions.map(rule =>
-      '<li><b>' + esc(rule.name) + '</b><small>' +
-      esc(requirements(rule) || (rule.trigger === "level-up" ? "Ao subir de nível" : "Condição especial")) + '</small></li>').join("") +
-      '</ul>' : '<p>Sem evoluções registradas.</p>') + '<h3>Golpes</h3><ul>' +
-      mon.moves.map(move => '<li>' + esc(move.replaceAll("-", " ")) + '</li>').join("") +
-      '</ul></section></div>';
+    '</dd></div><div><dt>Felicidade</dt><dd>' + mon.happiness + '/255</dd></div></dl>' +
+    '<section class="pokemon-summary-equipment"><h3>Item equipado</h3><div>' +
+    (mon.heldItem ? itemArt(mon.heldItem) : "") +
+    '<b>' + esc(mon.heldItem ? itemName(mon.heldItem) : "Nenhum") + '</b></div>' + heldControls + '</section></section>' +
+    '<section class="pokemon-summary-panel"><h3>Golpes</h3><ul class="pokemon-summary-moves">' +
+      (duel ? duel.moves.map(move => {
+        const accuracy = move.accuracy === true ? "Não falha" : "Precisão " + move.accuracy + "%";
+        const attributes = [moveTypes[move.type], moveCategories[move.category],
+          move.basePower && "Poder " + move.basePower, accuracy, move.pp + " PP"];
+        return '<li><b>' + esc(move.name) + '</b><small>' + esc(attributes.filter(Boolean).join(" · ")) +
+          '</small>' + (move.shortDesc ? '<small>' + esc(move.shortDesc) + '</small>' : '') + '</li>';
+      }) : mon.moves.map((move, index) => '<li><small aria-hidden="true">' + (index + 1) + '</small><b>' +
+        esc(move.replace(/(^|-)(\w)/g, (_, __, c) => " " + c.toUpperCase()).trim()) + '</b></li>')).join("") +
+      '</ul>' + (duel ? "" : '<h3>Evoluções</h3>' + (evolutions.length ? '<ul class="pokemon-summary-evolutions">' +
+        evolutions.map(rule => '<li><b>' + esc(rule.name) + '</b><small>' +
+        esc(requirements(rule) || (rule.trigger === "level-up" ? "Ao subir de nível" : "Condição especial")) +
+        '</small></li>').join("") + '</ul>' : '<p>Sem evoluções registradas.</p>')) +
+      '</section></div>' + (canPet || transfer ? '<footer class="pokemon-details-actions">' + transfer +
+      (canPet ? btn("Acariciar · 1 ação", "pet", {uid:mon.uid}, "primary") : "") + '</footer>' : "");
   dialog.showModal();
 }
 function profile() {
@@ -161,11 +202,11 @@ function boxScreen() {
           m.level +
           "</b>" +
           bars(m) +
-          btn(
+          ((p.party.includes(m) ? p.box.length < p.boxCapacity : p.party.length < 6) ? btn(
             p.party.includes(m) ? "Guardar na box" : "Colocar na equipe",
             "box",
             { uid: m.uid, slot: p.party.includes(m) ? first : undefined },
-          ) +
+          ) : "<small>Sem espaço livre. Arraste sobre um Pokémon para trocar.</small>") +
           "<button data-clear-mon>Fechar opções</button></div>"
         : ""),
   );

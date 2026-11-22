@@ -6,7 +6,7 @@
     "region.png",
     document.currentScript?.src || document.baseURI,
   ).href;
-  const { edges, neighbors, avatars, leagueIsland, hasLaboratory } = ExpeditionWorld;
+  const { edges, routeBetween, avatars, leagueIsland, leaguePorts, hasLaboratory } = ExpeditionWorld;
   const groups = {
     city: [
       ["Porto Aurora", 137, 199],
@@ -198,11 +198,10 @@
         const row = facilityHint("gym", gym ? "Ginásio · " + gym.name : "Ginásio");
         row.classList.add("map-hint-gym");
         if (gym) {
-          const roster = document.createElement("small");
-          roster.textContent = gym.team.map((name, index) =>
-            name.charAt(0).toUpperCase() + name.slice(1) + " · Nv. " + gym.levels[index],
-          ).join("  /  ");
-          row.lastElementChild.append(roster);
+          const details = document.createElement("small");
+          const type = moveTypes[gym.type] || gym.type;
+          details.textContent = [type, "Nv. " + gym.level, gym.size + " Pokémon"].filter(Boolean).join(" · ");
+          row.lastElementChild.append(details);
         }
         hint.append(row);
       }
@@ -235,7 +234,9 @@
 
   function refresh() {
     if (!host) return;
-    const reachable = canMove ? neighbors(selected) : [];
+    const reachable = canMove ? locations
+      .filter(({ id }) => (id !== leagueIsland || leaguePorts.includes(selected)) && routeBetween(selected, id))
+      .map(({ id }) => id) : [];
     for (const [id, button] of buttons) {
       button.setAttribute("aria-pressed", String(id === selected));
       button.disabled = id !== selected && !reachable.includes(id);
@@ -245,13 +246,9 @@
     syncPlayers();
     if (!layer) return;
     layer.clear();
+    layer.lineStyle(1, 0xe4dcc0, 0.75);
     for (const [a, b] of edges) {
       const from = sites.get(a), to = sites.get(b);
-      const enabled = (a === selected && reachable.includes(b)) ||
-        (b === selected && reachable.includes(a));
-      layer.lineStyle(enabled ? 4 : 2, 0x213d39, enabled ? 0.92 : 0.55);
-      layer.lineBetween(from.x, from.y, to.x, to.y);
-      layer.lineStyle(enabled ? 2 : 1, enabled ? 0xffe49d : 0xe4dcc0, 0.9);
       layer.lineBetween(from.x, from.y, to.x, to.y);
     }
     for (const site of locations) {

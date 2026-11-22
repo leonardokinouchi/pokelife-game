@@ -6,18 +6,20 @@
   <title>Guia do treinador · Expedição Aurora</title>
   <link rel="stylesheet" href="/guide.css">
   <script src="/guide.js" defer></script>
+  <script src="/guide-pokedex.js" defer></script>
 </head>
 <body>
   <header class="hero"><div class="wrap">
-    <a href="/">← Voltar ao lobby</a>
+    <a class="guide-back" href="/">← Voltar ao lobby</a>
     <p class="eyebrow">Expedição Aurora</p>
     <h1>Guia do treinador</h1>
     <p>Planeje a próxima ação, encontre Pokémon e compare suas chances de captura.</p>
+    <div class="hero-links"><a href="#pokedex">Abrir Pokédex</a><a href="#captura">Calcular captura</a></div>
   </div></header>
   <div class="wrap layout">
     <nav aria-label="Seções do guia">
-      <a href="#inicio">Primeiros passos</a><a href="#encontros">Encontros</a>
-      <a href="#captura">Captura</a><a href="#rodadas">Rodadas e cartas</a>
+      <a href="#inicio">Primeiros passos</a><a href="#pokedex">Pokédex</a>
+      <a href="#encontros">Encontros atuais</a><a href="#captura">Captura</a><a href="#rodadas">Rodadas e cartas</a>
       <a href="#economia">Economia</a><a href="#equipe">Equipe e batalha</a>
       <a href="#liga">Liga e duelos</a><a href="#minigames">Minigames</a>
       <a href="#pontos">Pontuação</a>
@@ -27,9 +29,9 @@
         <p>Entre em uma sala de 2 a 12 treinadores, em número par. Escolha um avatar disponível e marque <b>Estou pronto</b>.</p>
         <ol><li>Em Porto Aurora, assuma a vaga de vendedor ou auxiliar de enfermagem.</li>
         <li>Trabalhe no local da vaga para ganhar ₽ 100. Compre uma Poké Bola e confirme o carrinho.</li>
-        <li>Viaje por uma rota conectada e explore um bioma. Antes de ter um Pokémon apto, você pode tentar capturar ou fugir sem lutar.</li></ol>
+        <li>Clique em um destino conectado para viajar pela rota mais curta e explore um bioma. Antes de ter um Pokémon apto, você pode tentar capturar ou fugir sem lutar.</li></ol>
       </section>
-      <section id="encontros"><h2>Encontros por bioma</h2>
+      <section id="encontros"><h2>Encontros atuais</h2>
         <p>O horário é individual e depende das ações <b>antes</b> de explorar. O encontro mantém o período em que começou.</p>
         <div class="periods"><span>☀ Dia <b>10–6</b></span><span>◒ Tarde <b>5–4</b></span><span>☾ Noite <b>3–0</b></span></div>
         <p>Quando há candidatos temáticos elegíveis, o jogo sorteia pelo grupo temático em 60% dos casos e pelo comum em 40%. Um Pokémon presente nos dois grupos soma as duas chances. A tabela considera toda a variação de nível de uma exploração. A chance de shiny é 5% por encontro.</p>
@@ -50,6 +52,28 @@
         <details><summary>Critérios de nível e raridade</summary>
           <p>Sem equipe, o nível de referência é 3. Abaixo do nível 8, o filtro exige taxa de captura de pelo menos 120. Formas evoluídas aparecem a partir do nível 18 e respeitam o nível mínimo da sua linha evolutiva. Antes do nível 50, o filtro exclui lendários e míticos. O grupo temático exclui ambos em todos os níveis. Se o filtro deixar o grupo comum vazio, o jogo usa os Pokémon elegíveis do campo.</p>
         </details>
+      </section>
+      <section id="pokedex">
+        <h2>Pokédex de habitats</h2>
+        <p>Consulte as 1.025 espécies e edite o bioma e o horário da prévia do catálogo. As edições ficam no navegador e podem ser exportadas em JSON.</p>
+        <div class="filters pokedex-filters">
+          <label>Pokémon ou família<input id="dexSearch" type="search" placeholder="Nome ou número"></label>
+          <label>Bioma<select id="dexBiome"><option value="">Todos</option></select></label>
+          <label>Horário<select id="dexPeriod"><option value="">Todos</option><option value="day">Dia</option><option value="dusk">Tarde</option><option value="night">Noite</option></select></label>
+          <label>Raridade<select id="dexRarity"><option value="">Todas</option><option value="common">Comum</option><option value="uncommon">Incomum</option><option value="rare">Raro</option></select></label>
+        </div>
+        <label class="dex-variants"><input id="dexForms" type="checkbox"> Incluir formas adicionais</label>
+        <p id="dexStatus" role="status">Carregando catálogo…</p>
+        <div class="table-scroll pokedex-table" tabindex="0" aria-label="Catálogo de habitats">
+          <table><thead><tr><th>Pokémon</th><th>Raridade · BST final</th><th>Bioma</th><th>Horário</th></tr></thead>
+          <tbody id="dexRows"></tbody></table>
+        </div>
+        <div class="pokedex-tools">
+          <button type="button" id="dexPrev" disabled>Anterior</button>
+          <span id="dexPage"></span>
+          <button type="button" id="dexNext" disabled>Próxima</button>
+          <button type="button" id="dexExport" disabled>Exportar JSON</button>
+        </div>
       </section>
       <section id="captura"><h2>Calculadora de captura</h2>
         <p>As porcentagens são por bola lançada. Menos PV e condições de status aumentam a chance. Sono e congelamento têm o maior bônus.</p>
@@ -75,17 +99,18 @@
       </section>
       <section id="equipe"><h2>Equipe, evolução e batalha</h2>
         <p>A equipe ativa comporta seis Pokémon. Os demais vão para a Box. O Centro Pokémon restaura PV e PP e remove condições de status por ₽ 100. Carinho dá 25 de felicidade. Ao fim da fase de ações, cada Pokémon perde 2, inclusive na Box.</p>
-        <p>Vitórias com XP dividem a recompensa entre os Pokémon da equipe abaixo do nível 100, incluindo desmaiados. Há até quatro golpes por Pokémon. Você pode esquecer um golpe ou recusar o novo. Evoluções podem depender de nível, felicidade, horário, itens, trocas, gênero e golpes. Tarde conta como dia para evoluções por horário.</p>
+        <p>O XP é dividido entre os Pokémon da equipe abaixo do nível 100, incluindo desmaiados. Uma captura rende metade do XP de derrotar o mesmo Pokémon. Há até quatro golpes por Pokémon. Evoluções podem depender de nível, felicidade, horário, itens, trocas, gênero e golpes. Tarde conta como dia para evoluções por horário.</p>
         <p>A batalha usa tipos, habilidades, natureza, IVs, EVs e itens equipados. Alterações temporárias aparecem na arena. Uma Mega Pedra compatível habilita Mega Evolução quando disponível. Bagas podem ser consumidas durante a batalha.</p>
         <p>Os laboratórios das vilas das Flores, da Geada e das Cinzas modificam IVs (0–31), EVs (até 252 por atributo e 510 no total), natureza e habilidade. Uma modificação custa ₽ 1.500, uma ação e até 100 de felicidade.</p>
       </section>
       <section id="liga"><h2>Liga e duelos</h2>
+        <p>Cada nova sala sorteia oito líderes e oito tipos de ginásio. Os desafios vão do nível de referência 10 ao 80 e têm de dois a cinco Pokémon. As equipes são compartilhadas pela sala e aparecem quando a batalha começa.</p>
         <p>Conquiste oito insígnias para acessar a Ilha da Liga, por Costa Serena ou Monte Azul. A Elite Four tem quatro desafios consecutivos, com seis Pokémon por adversário. A sequência custa uma ação e permite usar itens da mochila nos intervalos.</p>
         <p>A roleta sorteia um formato que as equipes da sala suportam. Solo usa um ou três Pokémon por treinador. Duplas 1v1 usam quatro por treinador. Duplas 2v2 usam dois por treinador, com quatro, oito ou doze jogadores na sala.</p>
         <p>Escolha sua escalação e a ordem de entrada. O duelo começa após todos os participantes confirmarem. As equipes entram recuperadas no nível 50 em cópias temporárias, com os golpes, itens e treinamento de cada Pokémon. Cada vencedor recebe ₽ 250. Se apenas um treinador tiver equipe, ele vence por ausência.</p>
       </section>
       <section id="minigames"><h2>Minigames</h2>
-        <ul><li><b>Pedido do mercado:</b> calcule o total da compra. Acerto rende ₽ 180.</li><li><b>Leilão:</b> cubra o lance com seu saldo ou passe. Cada lance válido devolve o relógio a 20 segundos. O vencedor paga e leva o Pokémon.</li><li><b>Corrida de sobrevivência:</b> use ↑ para pular troncos e ↓ para se abaixar sob barreiras. O último sobrevivente vence.</li><li><b>Quiz do Milhão:</b> responda antes do prazo. A classificação considera acertos e tempo.</li></ul>
+        <ul><li><b>Leilão:</b> cubra o lance com seu saldo ou passe. Cada lance válido devolve o relógio a 20 segundos. O vencedor paga e leva o Pokémon.</li><li><b>Corrida de sobrevivência:</b> use ↑ para pular troncos e ↓ para se abaixar sob barreiras. O último sobrevivente vence.</li><li><b>Adivinha:</b> use as pistas coletadas pela dupla para identificar o Pokémon. Há seis pistas verdadeiras e seis falsas.</li><li><b>Hyperbeam in the Fog:</b> segure as setas ou WASD para voar durante a névoa. Todos disparam quando o prazo acaba.</li><li><b>ABC-Pokémon:</b> diga um Pokémon que comece com a letra da rodada antes que o tempo acabe.</li><li><b>Quiz do Milhão:</b> responda antes do prazo. A classificação considera acertos e tempo.</li></ul>
         <a href="/test-minigames">Abrir página de treino</a>
       </section>
       <section id="pontos"><h2>Pontuação final</h2>

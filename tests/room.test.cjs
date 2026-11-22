@@ -52,7 +52,7 @@ test("economy respects action budgets, place, ownership and failed purchases", (
   command(r, p, "shop", { item: "poke-ball", qty: 1 });
   assert.equal(p.money, 0);
   const beforeTravel = p.actions;
-  assert.throws(() => command(r, p, "move", { loc: "city8" }));
+  assert.throws(() => command(r, p, "move", { loc: "city99" }));
   assert.equal(p.actions, beforeTravel);
   command(r, p, "move", { loc: "biome1" });
   assert.equal(p.actions, beforeTravel);
@@ -64,6 +64,33 @@ test("economy respects action budgets, place, ownership and failed purchases", (
   command(r, p, "move", { loc: "city1" });
   while (p.actions) command(r, p, "work", { job: "vendedor" });
   assert.throws(() => command(r, p, "work", { job: "vendedor" }));
+});
+
+test("distant travel follows connected edges and is visible to the other player", () => {
+  const { neighbors, routeBetween } = require("../public/world.js");
+  const r = lobby(2), [p, observer] = r.players;
+  command(r, p, "start", options);
+  readTutorials(r);
+  assert.equal(routeBetween("city1", "city1"), null);
+  assert.equal(routeBetween("city1", "invalid"), null);
+  assert.throws(() => command(r, p, "move", { loc: "league1" }), /Embarque/);
+  command(r, p, "move", { loc: "city8" });
+  assert.equal(p.loc, "city8");
+  assert.equal(p.actions, 10);
+  const travel = view(r, observer).players.find(member => member.id === p.id).travel;
+  assert.ok(travel.length > 1);
+  assert.equal(travel.length, p.walks);
+  let position = "city1";
+  for (const [index, entry] of travel.entries()) {
+    assert.equal(entry.step, index + 1);
+    assert.equal(entry.from, position);
+    assert.notEqual(entry.loc, "league1");
+    assert.ok(neighbors(position).includes(entry.loc));
+    position = entry.loc;
+  }
+  assert.equal(position, "city8");
+  command(r, p, "move", { loc: "city3" });
+  assert.throws(() => command(r, p, "move", { loc: "league1" }), /8 insígnias/);
 });
 
 test("free travel still counts all six crossings for fatigue", () => {
@@ -454,7 +481,7 @@ test("Elite Four requires eight badges and takes place on the League island", ()
   assert.equal(p.actions, 10);
   command(r, p, "gym");
   assert.equal(p.enc.type, "elite");
-  assert.equal(p.enc.target.level, view(r, p).gyms[8].levels.at(-1));
+  assert.equal(p.enc.target.level, r.gymLevels[8].at(-1));
 });
 
 test("a Pokémon can only escape after its trainer reads the unhappy card", () => {
@@ -669,6 +696,15 @@ test("bag items are free and direct evolution items can be bought and consumed",
   assert.equal(p.items.potion, 0);
   command(r, p, "item", {item:"oranberry", uid:applin.uid});
   assert.equal(applin.heldItem, "oranberry");
+  p.items.leftovers = 1;
+  command(r, p, "item", {item:"leftovers", uid:applin.uid});
+  assert.equal(applin.heldItem, "leftovers");
+  assert.equal(p.items.oranberry, 1);
+  command(r, p, "unequip", {uid:applin.uid});
+  assert.equal(applin.heldItem, "");
+  assert.equal(p.items.leftovers, 1);
+  assert.throws(() => command(r, p, "unequip", {uid:applin.uid}), /não tem item/);
+  assert.equal(p.items.leftovers, 1);
   assert.equal(p.actions, 9);
 });
 
@@ -709,6 +745,23 @@ test("stone and trade evolutions record the before and after sprites for the own
   assert.equal(view(r, a).you.evolutions.length, 1);
 });
 
+test("both auctions require every player to have more than 100 for the draw", () => {
+  const { startMinigame } = require("../game.cjs");
+  const r = lobby(2);
+  const [a, b] = r.players;
+  a.money = 101;
+  b.money = 100;
+  startMinigame(r);
+  const options = view(r, a).minigameOptions;
+  assert.ok(!options.includes("auction") && !options.includes("darkAuction"));
+  assert.ok(options.includes(r.minigame));
+  b.money = 101;
+  startMinigame(r, "auction");
+  assert.ok(view(r, a).minigameOptions.includes("auction"));
+  assert.ok(view(r, a).minigameOptions.includes("darkAuction"));
+  assert.equal(view(r, a).auction.total, 1);
+});
+
 test("auction shares the lot, validates each bid and charges the winner once", () => {
   const { startMinigame, advanceAuction } = require("../game.cjs");
   const r = lobby(4);
@@ -740,9 +793,9 @@ test("auction shares the lot, validates each bid and charges the winner once", (
   assert.throws(() => bid(a, 10), /lote/);
   assert.throws(() => bid(b, 10, 1), /já comprou/);
   while (!view(r, a).auction.closed) advanceAuction(r, r.auction.deadline ?? r.auction.nextAt);
-  assert.equal(r.auction.results.length, 4);
-  assert.equal(new Set(r.auction.results.map(result => result.winner)).size, 4);
-  assert.ok(r.players.every(p => p.party.length === 1));
+  assert.equal(r.auction.results.length, 3);
+  assert.equal(new Set(r.auction.results.map(result => result.winner)).size, 3);
+  assert.equal(r.players.filter(p => p.party.length === 1).length, 3);
   for (const p of r.players) command(r, p, "auctionContinue");
   assert.equal(r.phase, "duelos");
   assert.equal(view(r,b).pairs.flat().length, 4);
@@ -762,6 +815,7 @@ test("the market and dark auction support rooms with zero balance or bids", () =
   command(r, b, "quiz", {answer:0});
   assert.equal(a.money, 180);
   assert.equal(b.money, 0);
+  a.money = 0;
   startMinigame(r, "darkAuction");
   for (const p of r.players) command(r, p, "miniReady");
   assert.equal(view(r,a).auction.hidden, true);
@@ -771,10 +825,9 @@ test("the market and dark auction support rooms with zero balance or bids", () =
   assert.equal(view(r,a).auction.hidden, false);
   assert.ok(view(r,a).auction.pokemon.name);
   advanceAuction(r, r.auction.nextAt);
-  advanceAuction(r, r.auction.nextAt);
   assert.equal(view(r,a).auction.closed, true);
-  assert.equal(r.auction.results.find(result => result.winner === b.id).amount, 0);
-  assert.equal(a.party.length + b.party.length, 2);
+  assert.equal(r.auction.results[0].amount, 0);
+  assert.equal(a.party.length + b.party.length, 1);
   assert.deepEqual(view(r, a).players.map(p => p.points.minigames), [5, 0]);
 });
 
@@ -997,8 +1050,10 @@ test("gym rosters grow by pairs and every Elite Four challenge uses six Pokémon
   p.party = [rules.makeMon("pikachu", 95)];
   const sizes = [2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 6, 6];
   const gyms = view(r, p).gyms;
-  assert.deepEqual(gyms.map(({ team }) => team.length), sizes);
+  assert.deepEqual(gyms.map(({size}) => size), sizes);
   assert.equal(new Set(gyms.map(({ name }) => name)).size, sizes.length);
+  assert.equal(new Set(gyms.slice(0, 8).map(gym => gym.type)).size, 8);
+  assert.ok(gyms.every(gym => !Object.hasOwn(gym, "team") && !Object.hasOwn(gym, "levels")));
 
   for (let index = 0; index < sizes.length; index++) {
     p.loc = index < 8 ? "city" + (index + 1) : "league1";
@@ -1015,11 +1070,16 @@ test("gym rosters grow by pairs and every Elite Four challenge uses six Pokémon
     }
     command(r, p, "gym");
     assert.equal(p.enc.battle.engine.getSide("p2").pokemon.length, sizes[index]);
-    const levels = gyms[index].levels;
+    const roster = r.gymRoster[index];
+    const levels = roster?.levels || r.gymLevels[index];
     const base = Math.min(90, (index + 1) * 10);
     assert.ok(levels.every(level => level >= base - 3 && level <= base + 2));
     assert.deepEqual(p.enc.battle.engine.getSide("p2").pokemon.map(mon => mon.level), levels);
-    assert.deepEqual(view(r, p).gyms[index].levels, levels);
+    assert.deepEqual(view(r, p).gyms[index], gyms[index]);
+    if (roster) {
+      for (const [slot, id] of roster.team.entries())
+        assert.ok(rules.info({pokemonId:id}).types.includes(roster.type.toLowerCase()));
+    }
   }
 });
 
