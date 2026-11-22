@@ -1319,11 +1319,19 @@ let drawer = "",
   lastNotice = "",
   audio;
 let muted = localStorage.auroraMute === "1";
-function tone(hit = false) {
+function unlockGameAudio() {
   if (muted) return;
   try {
     audio ??= new AudioContext();
-    audio.resume();
+    if (audio.state !== "running") audio.resume().catch(() => {});
+  } catch {}
+}
+
+function tone(hit = false) {
+  if (muted) return;
+  try {
+    unlockGameAudio();
+    if (!audio) return;
     const t = audio.currentTime,
       o = audio.createOscillator(),
       v = audio.createGain();
@@ -1358,11 +1366,18 @@ function initializeScreen() {
   });
   for (const type of ["pointerover", "pointerout", "focusin", "focusout"])
     $("arena").addEventListener(type, updateMoveTooltip);
-  $("sound").textContent = muted ? "♪ ×" : "♪";
+  const updateSoundButton = () => {
+    $("sound").textContent = muted ? "♪ ×" : "♪";
+    $("sound").setAttribute("aria-pressed", String(!muted));
+  };
+  updateSoundButton();
+  document.addEventListener("pointerdown", unlockGameAudio, {capture:true, passive:true});
+  document.addEventListener("keydown", unlockGameAudio, {capture:true});
   $("sound").onclick = () => {
     muted = !muted;
     localStorage.auroraMute = muted ? "1" : "0";
-    $("sound").textContent = muted ? "♪ ×" : "♪";
+    updateSoundButton();
+    unlockGameAudio();
   };
   $("fullscreen").onclick = () => {
     const task = document.fullscreenElement
