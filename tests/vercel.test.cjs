@@ -92,4 +92,28 @@ test("concurrent joins keep both trainers in the cloud room", async t => {
   const description = {type:"answer", sdp:"host-answer"};
   await signal(host.token, {target:guestId, nonce, description});
   assert.deepEqual((await signal(guest.token)).link.answer, description);
+
+  const testHost = await action({action:"create", name:"Lia", testLobby:true});
+  const testCode = testHost.state.code;
+  const testGuest = await action({action:"join", code:testCode, name:"Noa", testLobby:true});
+  const inTestRoom = (user, kind, data = {}) =>
+    action({action:kind, code:testCode, token:user.token, ...data});
+  for (const user of [testHost, testGuest]) await inTestRoom(user, "ready");
+  const started = await inTestRoom(testHost, "start", {kind:"guess"});
+  assert.equal(started.state.phase, "minigame");
+  assert.equal(started.state.minigame, "guess");
+  for (const user of [testHost, testGuest]) await inTestRoom(user, "miniReady");
+  const hostView = (await inTestRoom(testHost, "state")).state;
+  const guestView = (await inTestRoom(testGuest, "state")).state;
+  assert.notEqual(hostView.pairGame.guide, guestView.pairGame.guide);
+  const runner = hostView.pairGame.guide ? testGuest : testHost;
+  const snapshot = deserialize(Buffer.from(records.get(prefix + testCode).slice(36), "base64"));
+  await inTestRoom(runner, "pairGuess", {name:snapshot.pairGame.teams[0].answer});
+  await inTestRoom(testHost, "pairContinue");
+  assert.equal((await inTestRoom(testGuest, "pairContinue")).state.phase, "final");
+  const reopened = await inTestRoom(testHost, "reopenTestLobby");
+  assert.equal(reopened.state.phase, "lobby");
+  assert.equal(reopened.state.code, testCode);
+  assert.ok(reopened.state.players.every(p => !p.ready));
+  assert.equal((await inTestRoom(testGuest, "state")).state.phase, "lobby");
 });

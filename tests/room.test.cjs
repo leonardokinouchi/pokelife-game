@@ -208,7 +208,7 @@ test("avatars can be selected before entering a room and changed in the lobby", 
   assert.equal(other.avatar, "mar");
 });
 
-test("job promotions require prior XP and an eligible Pokémon and apply shift limits", () => {
+test("job promotions require two and three eligible Pokémon and every action pays", () => {
   const r = lobby(2), [p] = r.players;
   command(r, p, "start", options);
   readTutorials(r);
@@ -224,24 +224,25 @@ test("job promotions require prior XP and an eligible Pokémon and apply shift l
   pikachu.hp = 0;
   assert.throws(() => command(r, p, "hire", {job:"gerente"}));
   rules.heal(pikachu);
+  assert.throws(() => command(r, p, "hire", {job:"gerente"}), /1\/2/);
+  p.party.push(rules.makeMon("helioptile", 15));
   command(r, p, "hire", {job:"gerente"});
   command(r, p, "work");
-  assert.equal(p.money, 465);
+  assert.equal(p.money, 490);
   p.jobProgress.gerente = 400;
   assert.throws(() => command(r, p, "hire", {job:"administrador"}));
-  p.party = [rules.makeMon("pikachu", 30)];
+  p.party = ["pikachu", "helioptile", "meowth"].map(species => rules.makeMon(species, 30));
   command(r, p, "hire", {job:"administrador"});
-  command(r, p, "work");
-  assert.equal(p.money, 685);
-  assert.throws(() => command(r, p, "work"), /Limite/);
-  p.loc = "city2";
-  assert.throws(() => command(r, p, "work"), /Visite/);
-  command(r, p, "hire", {job:"administrador"});
-  assert.throws(() => command(r, p, "work"), /Limite/);
-  r.round++;
-  p.actions = 10;
-  command(r, p, "work");
-  assert.equal(p.money, 905);
+  p.party[2].hp = 0;
+  const actions = p.actions;
+  assert.throws(() => command(r, p, "work"), /2\/3/);
+  assert.equal(p.actions, actions);
+  assert.equal(p.money, 490);
+  rules.heal(p.party[2]);
+  for (let i = 0; i < 3; i++) command(r, p, "work");
+  assert.equal(p.money, 1315);
+  assert.equal(p.jobProgress.administrador, 200);
+  assert.equal(p.actions, actions - 3);
 });
 
 
@@ -722,7 +723,9 @@ test("auction shares the lot, validates each bid and charges the winner once", (
   assert.throws(() => bid(b, 70));
   assert.throws(() => bid(b, 201));
   assert.throws(() => bid(b, 75.5));
+  r.auction.deadline = Date.now() + 1000;
   bid(b, 90);
+  assert.ok(r.auction.deadline > Date.now() + 19000);
   pass(a);
   pass(c);
   assert.throws(() => bid(c, 91));

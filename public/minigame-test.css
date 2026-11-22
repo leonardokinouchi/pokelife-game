@@ -6,6 +6,7 @@ body {
 }
 header { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:8px; padding:8px 14px; border-bottom:1px solid #957b4d; background:#142d29; }
 h1 { margin:0; font:700 1.2rem Georgia,serif; color:#ffe1a3; }
+.practice-multiplayer { color:#ffe1a3; font-weight:700; text-underline-offset:3px; }
 nav { display:flex; flex-wrap:wrap; gap:5px; }
 button { min-height:38px; padding:5px 10px; font:600 .9rem system-ui; color:#fff0ce; background:#29483d; border:1px solid #8a8e70; border-radius:6px; cursor:pointer; }
 button[aria-pressed="true"],button:hover { background:#f0d598; color:#172c26; }

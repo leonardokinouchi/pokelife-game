@@ -263,13 +263,38 @@ const timedHabitats = Object.fromEntries(Object.entries(pools).map(([biome, pool
 
 const themedEncounterChance = .6;
 
+const encounterLevels = new Map();
+function minimumEncounterLevel(mon, visiting = new Set()) {
+  if (!mon?.parent || visiting.has(mon.id)) return 1;
+  if (encounterLevels.has(mon.id)) return encounterLevels.get(mon.id);
+  const path = new Set(visiting).add(mon.id);
+  const routes = catalog.evolution.filter(rule => rule.evolved_species_id === mon.speciesId &&
+    (rule.targetPokemon ? rule.targetPokemon === mon.id : mon.isDefault));
+  const level = routes.length ? Math.min(...routes.map(rule => Math.max(18,
+    rule.minimum_level || 1, minimumEncounterLevel(byId.get(rule.requiredPokemon) || defaults.get(rule.parent), path)))) :
+    Math.max(18, minimumEncounterLevel(defaults.get(mon.parent), path));
+  encounterLevels.set(mon.id, level);
+  return level;
+}
+
+function evolutionDetails(mon) {
+  return catalog.evolution.filter(rule => rule.parent === mon.speciesId &&
+    (rule.requiredPokemon ? rule.requiredPokemon === mon.pokemonId : record(mon).isDefault))
+    .map(rule => ({
+      ...rule,
+      name: dexById.get(rule.targetPokemon || defaults.get(rule.evolved_species_id)?.id)?.name,
+      parentParty: dexById.get(defaults.get(rule.party_species_id)?.id)?.name,
+      tradeTarget: dexById.get(defaults.get(rule.trade_species_id)?.id)?.name,
+    })).filter(rule => rule.name);
+}
+
 function encounterPools(biome, level, period) {
   const pool = pools[biome] || pools.campo;
   const eligible = m => (level >= 50 || !m.rare) &&
-    (level >= 18 || !m.parent) && (level >= 8 || m.catchRate >= 120);
+    level >= minimumEncounterLevel(m) && (level >= 8 || m.catchRate >= 120);
   const possible = pool.filter(eligible);
   return {
-    common: possible.length ? possible : pool,
+    common: possible.length ? possible : pools.campo.filter(eligible),
     themed: timedHabitats[biome]?.[period]?.filter(eligible) || [],
   };
 }
@@ -531,6 +556,7 @@ module.exports = {
   captureGuide,
   silhouetteSpecies,
   encounterGuide,
+  evolutionDetails,
   xpInfo,
   gainXP,
   laboratoryNatures,

@@ -9,7 +9,7 @@ const archivedMinigames = new Set(["market", "elements", "claim"]);
 const eligibleMinigames = count => minigames.filter(kind =>
   !archivedMinigames.has(kind) && (!isPairMinigame(kind) || validPlayerCount(count)));
 const isAuction = kind => kind === "auction" || kind === "darkAuction";
-const auctionDuration = 10000;
+const auctionDuration = 20000;
 const auctionRevealDuration = 1800;
 
 const { actionPeriod, neighbors, avatars, validPlayerCount, leagueIsland, leaguePorts, hasLeagueAccess, hasLaboratory } = require("./public/world.js");
@@ -27,28 +27,28 @@ const BIOMES = [
 const WORK_XP = 100;
 const careers = [
   { facility:"store", types:["normal","electric"], labels:["Normal","Elétrico"], levels:[0,15,30],
-    ranks:[["vendedor","Vendedor",100],["gerente","Gerente",165],["administrador","Administrador da loja",220]] },
+    ranks:[["vendedor","Vendedor",100],["gerente","Gerente",190],["administrador","Administrador da loja",275]] },
   { facility:"center", types:["fairy","psychic"], labels:["Fada","Psíquico"], levels:[0,15,30],
     happiness:[0,100,150],
-    ranks:[["auxiliar","Auxiliar de enfermagem",100],["enfermeiro","Enfermeiro",165],["chefe-enfermagem","Chefe de enfermagem",220]] },
+    ranks:[["auxiliar","Auxiliar de enfermagem",100],["enfermeiro","Enfermeiro",190],["chefe-enfermagem","Chefe de enfermagem",275]] },
   { place:"biome1", types:["normal","grass"], labels:["Normal","Planta"], levels:[1,15,30],
-    ranks:[["cuidador","Cuidador do prado",130],["criador","Criador de campo",180],["especialista-criacao","Especialista em criação",230]] },
+    ranks:[["cuidador","Cuidador do prado",130],["criador","Criador de campo",210],["especialista-criacao","Especialista em criação",290]] },
   { place:"biome2", types:["bug","poison"], labels:["Inseto","Venenoso"], levels:[1,18,35],
-    ranks:[["lenhador","Lenhador",145],["guarda-florestal","Guarda florestal",190],["guardiao-bosque","Guardião do bosque",240]] },
+    ranks:[["lenhador","Lenhador",145],["guarda-florestal","Guarda florestal",220],["guardiao-bosque","Guardião do bosque",305]] },
   { place:"biome3", types:["rock","ground"], labels:["Pedra","Terra"], levels:[1,18,35],
-    ranks:[["minerador","Minerador",145],["supervisor-mineracao","Supervisor de mineração",190],["mestre-mineracao","Mestre de mineração",240]] },
+    ranks:[["minerador","Minerador",145],["supervisor-mineracao","Supervisor de mineração",220],["mestre-mineracao","Mestre de mineração",305]] },
   { place:"biome4", types:["water","flying"], labels:["Água","Voador"], levels:[1,18,35],
-    ranks:[["guarda-costeiro","Guarda costeiro",140],["patrulheiro","Patrulheiro costeiro",185],["comandante-costeiro","Comandante costeiro",235]] },
+    ranks:[["guarda-costeiro","Guarda costeiro",140],["patrulheiro","Patrulheiro costeiro",215],["comandante-costeiro","Comandante costeiro",300]] },
   { place:"biome5", types:["water","dragon"], labels:["Água","Dragão"], levels:[1,18,35],
-    ranks:[["pescador","Pescador",140],["mestre-pescador","Mestre pescador",185],["especialista-lago","Especialista do lago",235]] },
+    ranks:[["pescador","Pescador",140],["mestre-pescador","Mestre pescador",215],["especialista-lago","Especialista do lago",300]] },
   { place:"biome6", types:["ice","steel"], labels:["Gelo","Aço"], levels:[1,20,40],
-    ranks:[["guia","Guia de montanha",150],["guia-senior","Guia sênior",200],["chefe-expedicao","Chefe de expedição",250]] },
+    ranks:[["guia","Guia de montanha",150],["guia-senior","Guia sênior",235],["chefe-expedicao","Chefe de expedição",320]] },
   { place:"biome7", types:["fire","rock"], labels:["Fogo","Pedra"], levels:[1,22,45],
-    ranks:[["vigia","Vigia do vulcão",150],["inspetor","Inspetor vulcânico",210],["chefe-vulcanico","Chefe de segurança vulcânica",260]] },
+    ranks:[["vigia","Vigia do vulcão",150],["inspetor","Inspetor vulcânico",245],["chefe-vulcanico","Chefe de segurança vulcânica",330]] },
   { place:"biome8", types:["fighting","dark"], labels:["Lutador","Sombrio"], levels:[1,20,40],
-    ranks:[["tecnico","Técnico de campo",145],["engenheiro","Engenheiro de manutenção",195],["engenheiro-chefe","Engenheiro-chefe",245]] },
+    ranks:[["tecnico","Técnico de campo",145],["engenheiro","Engenheiro de manutenção",225],["engenheiro-chefe","Engenheiro-chefe",310]] },
   { facility:"lab", types:["psychic","ghost"], labels:["Psíquico","Fantasma"], levels:[1,22,45],
-    ranks:[["assistente-pesquisa","Assistente de pesquisa",150],["pesquisador","Pesquisador de campo",210],["pesquisador-chefe","Pesquisador-chefe",260]] },
+    ranks:[["assistente-pesquisa","Assistente de pesquisa",150],["pesquisador","Pesquisador de campo",245],["pesquisador-chefe","Pesquisador-chefe",330]] },
 ];
 
 const JOBS = Object.fromEntries(careers.flatMap(career => career.ranks.map(([id, name, pay], rank) => {
@@ -59,22 +59,24 @@ const JOBS = Object.fromEntries(careers.flatMap(career => career.ranks.map(([id,
     happiness: career.happiness?.[rank] || 0,
     prior: rank ? career.ranks[rank - 1][0] : null,
     target: rank === 2 ? 400 : urban ? 500 : 600,
-    limit: rank === 2 ? 1 : pay >= 200 ? 2 : null,
+    requiredPokemon: career.levels[rank] ? rank + 1 : 0,
   }];
 })));
 
 function jobRequirement(p, job) {
   const current = job.prior ? p.jobProgress[job.prior] || 0 : 0;
   const target = job.prior ? job.target : 0;
-  const pokemon = !job.level || p.party.some(mon => mon.hp > 0 &&
+  const eligible = job.requiredPokemon ? p.party.filter(mon => mon.hp > 0 &&
     mon.level >= job.level && mon.happiness >= job.happiness &&
-    mon.types.some(type => job.types.includes(type)));
+    mon.types.some(type => job.types.includes(type))).map(mon => mon.uid) : [];
   const text = [
     target ? target + " XP em " + JOBS[job.prior].name + " (" + current + "/" + target + ")" : "",
-    job.level ? "Pokémon apto de " + job.labels.join(" ou ") + " · Nv. " + job.level + "+" +
+    job.requiredPokemon ? Math.min(eligible.length, job.requiredPokemon) + "/" + job.requiredPokemon +
+      " Pokémon aptos · " + job.labels.join(" ou ") + " · Nv. " + job.level + "+" +
       (job.happiness ? " · felicidade " + job.happiness + "+" : "") : "",
   ].filter(Boolean).join(" • ");
-  return { met: current >= target && pokemon, current, target, text: text || "Nenhum" };
+  return { met: current >= target && eligible.length >= job.requiredPokemon,
+    current, target, eligible, requiredPokemon:job.requiredPokemon, text:text || "Nenhum" };
 }
 
 function workCount(r, p, id) {
@@ -338,6 +340,8 @@ function view(r, p) {
   const position = members.indexOf(p.id);
   return {
     code: r.code,
+    testLobby: !!r.testLobby,
+    testOptions: r.testLobby && r.phase === "lobby" ? eligibleMinigames(r.players.length) : null,
     cards: r.cards.slice(0, r.cardIndex + 1),
     cardCount: r.cards.length,
     activeCard: r.phase === "cards" ? r.cards[r.cardIndex].id : null,
@@ -355,8 +359,6 @@ function view(r, p) {
       place: job.place,
       pay: job.pay,
       rank: job.rank,
-      limit: job.limit,
-      shifts: workCount(r, p, id),
       requirement: jobRequirement(p, job),
     }])),
     shop: SHOP,
@@ -373,6 +375,9 @@ function view(r, p) {
     players: r.players.map(other),
     you: {
       ...rest,
+      evolutionsByPokemon: Object.fromEntries([...new Map(
+        [...p.party, ...p.box].map(mon => [mon.pokemonId, mon])).values()]
+        .map(mon => [mon.pokemonId, rules.evolutionDetails(mon)])),
       needsHealing: p.party.some(needsHealing),
       period: actionPeriod(p.actions),
       moveLesson: learning ? {
@@ -513,7 +518,7 @@ function next(r) {
     if (r.mini) startMinigame(r);
     else pair(r);
   } else if (r.phase === "minigame") {
-    if (r.practiceBot) r.phase = "final";
+    if (r.practiceBot || r.testLobby) r.phase = "final";
     else pair(r);
   }
   else if (r.phase === "duelos") {
@@ -795,6 +800,7 @@ function auctionAction(r, p, action, data) {
       data.amount <= p.money, "O lance deve superar o atual e caber no seu saldo.");
     auction.amount = data.amount;
     auction.leader = p.id;
+    auction.deadline = Date.now() + auctionDuration;
   } else {
     check(action === "auctionPass", "Escolha um lance ou passe.");
     auction.passed.push(p.id);
@@ -917,6 +923,7 @@ function finishEncounter(r, p) {
   const enc = p.enc,
     v = enc.battle.view("p1");
   if (!v.ended) return;
+  if (v.timeline) p.lastBattle = v.timeline;
   const won = v.winner === "p1";
   let message = "Sua equipe foi derrotada.";
   if (won) {
@@ -959,7 +966,6 @@ function takeAction(r, p, k, d) {
     const requirement = jobRequirement(p, job);
     check(requirement.met, requirement.text);
     const shifts = workCount(r, p, p.job);
-    check(job.limit === null || shifts < job.limit, "Limite de turnos pagos atingido neste cargo.");
     if (p.workRound?.round !== r.round) p.workRound = {round:r.round, shifts:{}};
     p.workRound.shifts[p.job] = shifts + 1;
     const xp = shifts < 2 ? WORK_XP : 0;
@@ -1225,6 +1231,11 @@ function execute(r, p, k, d = {}) {
     check(r.players.every((q) => q.ready), "Todos os treinadores devem estar prontos.");
     check(new Set(r.players.map((q) => q.avatar)).size === r.players.length,
       "Cada treinador precisa de um personagem diferente.");
+    if (r.testLobby) {
+      check(eligibleMinigames(r.players.length).includes(d.kind), "Escolha um minigame disponível.");
+      startMinigame(r, d.kind);
+      return;
+    }
     check(
       Number.isInteger(d.rounds) &&
         d.rounds >= 1 &&

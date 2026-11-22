@@ -37,7 +37,8 @@ const phases = {
   final: "Classificação final",
 };
 const practiceMode = location.pathname === "/test-minigames/play";
-const sessionKey = practiceMode ? "auroraPractice" : "aurora";
+const testLobbyMode = new URLSearchParams(location.search).get("teste") === "1";
+const sessionKey = practiceMode ? "auroraPractice" : testLobbyMode ? "auroraTestLobby" : "aurora";
 let session = JSON.parse(sessionStorage.getItem(sessionKey) || "null"),
   state,
   mode = "create",
@@ -307,7 +308,31 @@ $("roundCard").onclick = event => {
     act("card", { id: card.id });
 };
 
-function setState(s) {
+let battlePlayback = false;
+let queuedBattleState;
+function setState(s, afterPlayback = false) {
+  if (battlePlayback) {
+    queuedBattleState = s;
+    return;
+  }
+  const before = state?.you.enc?.battle || (!state?.duel?.result && state?.duel?.battle);
+  const after = s.you.enc?.battle || (!state?.duel?.result && s.duel?.battle);
+  const terminalEvents = state?.you.enc?.battle && !s.you.enc &&
+    /Vitória|derrotada/.test(s.you.notice) ? s.you.lastBattle : null;
+  const events = before && (after?.timeline || terminalEvents)?.filter(event => event.index >= before.timelineLength);
+  if (!afterPlayback && events?.length && !$("arena").hidden) {
+    battlePlayback = true;
+    $("arena").inert = true;
+    playBattleEvents(events).finally(() => {
+      battlePlayback = false;
+      $("arena").inert = false;
+      setState(s, true);
+      const queued = queuedBattleState;
+      queuedBattleState = null;
+      if (queued) setState(queued);
+    });
+    return;
+  }
   connectRealtime(s);
   playPairFeedback(state?.pairGame, s.pairGame);
   const soloEnd =
@@ -419,7 +444,7 @@ $("evolutionScene").oncancel = (event) => {
 };
 
 async function act(action, data = {}) {
-  if (busy) return;
+  if (busy || battlePlayback) return;
   predictReflex(action, data);
   busy = true;
   sequence++;
@@ -474,6 +499,11 @@ async function poll() {
   }
 }
 const invite = new URLSearchParams(location.search).get("sala");
+if (testLobbyMode) {
+  document.title = "Lobby de teste · Expedição Aurora";
+  document.querySelector(".intro h1").textContent = "Lobby de teste";
+  document.querySelector(".intro > p").textContent = "Crie uma sala de teste ou entre com o código de um amigo.";
+}
 function switchMode(m) {
   mode = m;
   document
@@ -495,6 +525,7 @@ $("gateForm").onsubmit = (e) => {
     name: v("trainer"),
     code: v("roomCode").trim().toUpperCase(),
     avatar: mode === "create" ? $("gateAvatars").querySelector(":checked")?.value : undefined,
+    testLobby: testLobbyMode,
   });
 };
 function trainerSprite(avatar, className, alt = "") {
@@ -522,7 +553,7 @@ function room() {
     '<div class="row"><span>' +
       s.players.length +
       " / " + maxPlayers + " treinadores</span>" +
-      btn("Copiar código", "copy") +
+      btn(s.testLobby ? "Copiar convite" : "Copiar código", "copy") +
       "</div>" +
       s.players
         .map(
@@ -544,7 +575,9 @@ function room() {
             trainerSprite(id, "trainer-preview") + esc(name) +
             (taken ? '<small>Em uso</small>' : "") + "</button>";
         }).join("") + "</fieldset>" +
-      (host
+      (host && s.testLobby
+        ? '<label>Minigame' + select("testKind", s.testOptions.map(id => opt(id, minigameNames[id])).join("")) + '</label>'
+        : host
         ? '<div class="grid2"><label>Rodadas<input id="rounds" type="number" min="1" max="40" value="8"></label><label>Multiplicador de XP<input id="mult" type="number" min=".25" max="30" step=".25" value="3"></label></div><label>Minigame' +
           select("mini", opt("yes", "Ativado") + opt("no", "Desativado")) +
           "</label>"
@@ -557,9 +590,10 @@ function room() {
         "primary",
       ) +
       (host ? '<button class="primary" data-action="start"' +
-        (canStart ? "" : " disabled") + ">Iniciar expedição</button>" : "") +
+        (canStart ? "" : " disabled") + (s.testLobby ? ">Iniciar minigame</button>" : ">Iniciar expedição</button>") : "") +
       btn("Sair da sala", "leave") +
-      '</div><p class="note">A expedição começa com 2, 4, 6, 8, 10 ou 12 treinadores prontos.</p><details><summary>Como vencer</summary><p>Cada espécie registrada vale 3 pontos e cada captura shiny vale 10. Cada ₽ 200 no saldo final vale 1 ponto. Cada insígnia vale 10 e completar a Elite Four vale 40. Cada carinho vale 1 ponto e cada vitória em duelo ou minigame vale 5.</p></details>',
+      '</div>' + (s.testLobby ? '<p class="note">O anfitrião escolhe o minigame. Todos devem estar prontos, em um grupo de 2, 4, 6, 8, 10 ou 12.</p>' :
+        '<p class="note">A expedição começa com 2, 4, 6, 8, 10 ou 12 treinadores prontos.</p><details><summary>Como vencer</summary><p>Cada espécie registrada vale 3 pontos e cada captura shiny vale 10. Cada ₽ 200 no saldo final vale 1 ponto. Cada insígnia vale 10 e completar a Elite Four vale 40. Cada carinho vale 1 ponto e cada vitória em duelo ou minigame vale 5.</p></details>'),
   );
 }
 function bars(m) {
@@ -593,15 +627,16 @@ function bars(m) {
   );
 }
 function showMon(m, full = false) {
+  const details = full ? ' data-pokemon-details="' + esc(m.uid) + '"' : "";
   return (
-    '<div class="slot"><div class="battlecard">' +
+    '<div class="slot"><' + (full ? 'button type="button"' : "div") + ' class="battlecard"' + details + '>' +
     tokenMon(m) +
     "<div><b>" +
     esc(m.name) +
     "</b> · Nv. " +
     m.level +
     bars(m) +
-    "</div></div>" +
+    "</div></" + (full ? "button" : "div") + ">" +
     (full
       ? "<small>FELICIDADE " +
         m.happiness +
@@ -1125,6 +1160,10 @@ function render() {
   $("topStatus").textContent =
     "SALA " + s.code + " · " + s.players.length + " TREINADORES";
   if (s.phase === "lobby") {
+    $("lobby").hidden = false;
+    $("game").hidden = true;
+    document.body.classList.remove("playing");
+    previousPhase = "lobby";
     document.body.classList.add("in-room");
     $("gate").hidden = true;
     $("roomPanel").innerHTML = room();
@@ -1163,28 +1202,38 @@ document.addEventListener("click", (e) => {
   if (k === "home") {
     sessionStorage.removeItem(sessionKey);
     if (practiceMode) window.top.location.assign("/test-minigames");
-    else location.assign("/");
+    else location.assign(testLobbyMode ? "/?teste=1" : "/");
+    return;
+  }
+  if (k === "wireListen") {
+    const text = state?.pairGame?.practiceSpeech;
+    if (!text || !("speechSynthesis" in window)) return;
+    const voice = new SpeechSynthesisUtterance(text);
+    voice.lang = "pt-BR";
+    speechSynthesis.cancel();
+    speechSynthesis.speak(voice);
     return;
   }
   if (k === "leave") {
     request({ action: "leave" })
       .then(() => {
         sessionStorage.removeItem(sessionKey);
-        location.assign(practiceMode ? "/test-minigames" : "/");
+        location.assign(practiceMode ? "/test-minigames" : testLobbyMode ? "/?teste=1" : "/");
       })
       .catch((e) => toast(e.message));
     return;
   }
   if (k === "copy") {
+    const invite = state.testLobby ? location.origin + "/?teste=1&sala=" + state.code : state.code;
     navigator.clipboard
-      ?.writeText(state.code)
-      .then(() => toast("Código copiado."))
+      ?.writeText(invite)
+      .then(() => toast(state.testLobby ? "Convite copiado." : "Código copiado."))
       .catch(() => toast(state.code));
     toast("Código da sala: " + state.code);
     return;
   }
   if (k === "start")
-    Object.assign(d, {
+    Object.assign(d, state.testLobby ? {kind:v("testKind")} : {
       rounds: +v("rounds"),
       mult: +v("mult"),
       mini: v("mini") === "yes",
@@ -1211,7 +1260,8 @@ document.addEventListener("click", (e) => {
     groupDraft.move = k === "groupMove" ? d.move : "";
     if (k === "groupPick") {
       groupDraft.picks[d.slot] = d.command;
-      groupDraft.slot = d.slot + 1;
+      const next = state.duel.battle.groups.findIndex((group, index) => !groupPick(group, index));
+      groupDraft.slot = next < 0 ? d.slot : next;
     }
     refreshGroupControls();
     return;
@@ -1487,25 +1537,68 @@ function battleBoostChips(boosts = {}) {
 
 let groupDraft = {key:"", slot:0, move:"", picks:{}};
 let activeLineup = "";
-let dualLog = {key:"", count:0, lines:[], timer:null};
-
-function playDualLog(s, battle, isDuel) {
-  clearTimeout(dualLog.timer);
-  const key = s.code + ":" + s.round;
-  if (!isDuel || battle.mode === "singles" || dualLog.key !== key) {
-    dualLog = {key:isDuel ? key : "", count:battle.logCount, lines:[], timer:null};
-    return;
+async function playBattleEvents(events) {
+  const arena = $("arena");
+  const report = arena.querySelector(".battle-report .message");
+  const history = $("battleLog");
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const pause = ms => new Promise(resolve => setTimeout(resolve, reduced ? 0 : ms));
+  for (const event of events) {
+    const unit = arena.querySelector('[data-battle-unit="' + CSS.escape(event.position) + '"]');
+    const hud = arena.querySelector('[data-battle-position="' + CSS.escape(event.position) + '"]');
+    if (event.text) {
+      if (report) report.textContent = event.text;
+      if (history) {
+        const follow = history.scrollHeight - history.scrollTop - history.clientHeight < 8;
+        const line = document.createElement("li");
+        line.textContent = event.text;
+        history.append(line);
+        if (follow) history.scrollTop = history.scrollHeight;
+      }
+    }
+    if (event.kind === "move") {
+      if (unit && !unit.hidden && !reduced) {
+        const offset = unit.classList.contains("own") ? 26 : -26;
+        unit.animate([{translate:"0 0"}, {translate:offset + "px -14px", offset:.45},
+          {translate:"0 0"}], {duration:260, easing:"ease-out"});
+      }
+      await pause(260);
+    } else if (event.kind === "-damage" || event.kind === "-heal") {
+      const bar = hud?.querySelector("progress");
+      if (bar && event.hp !== null) {
+        const hp = Math.round(bar.max * event.hp);
+        const readout = bar.nextElementSibling;
+        if (readout) readout.textContent = hp + "/" + bar.max;
+        if (reduced) bar.value = hp;
+        else animateHP(bar, bar.value, hp);
+      }
+      if (event.kind === "-damage" && unit && !unit.hidden && !reduced) {
+        tone(true);
+        unit.animate([{filter:"brightness(1)"}, {filter:"brightness(2.4)"}, {filter:"brightness(1)"}],
+          {duration:200});
+      }
+      await pause(300);
+    } else if (event.kind === "faint") {
+      if (unit && !unit.hidden && !reduced)
+        unit.animate([{opacity:1, translate:"0 0"}, {opacity:0, translate:"0 28px"}], {duration:230, fill:"forwards"});
+      await pause(230);
+      if (unit) unit.hidden = true;
+      if (hud) hud.hidden = true;
+    } else if (event.mon && unit) {
+      unit.innerHTML = sprite(event.mon, unit.classList.contains("own"));
+      unit.hidden = false;
+      if (hud) {
+        hud.hidden = false;
+        hud.querySelector(".vitals-heading strong").textContent = event.mon.name;
+        const bar = hud.querySelector("progress");
+        const hp = event.hp ?? 1;
+        bar.max = event.mon.maxhp;
+        bar.value = Math.round(bar.max * hp);
+        bar.nextElementSibling.textContent = bar.value + "/" + bar.max;
+      }
+      await pause(180);
+    }
   }
-  const newCount = battle.logCount - dualLog.count;
-  if (newCount > 0) dualLog.lines.push(...battle.log.slice(-newCount));
-  dualLog.count = battle.logCount;
-  const report = $("arena").querySelector(".battle-report .message");
-  const advance = () => {
-    if (!report?.isConnected || !dualLog.lines.length) return;
-    report.textContent = dualLog.lines.shift();
-    dualLog.timer = setTimeout(advance, 450);
-  };
-  advance();
 }
 
 function groupPick(group, index) {
@@ -1562,7 +1655,8 @@ function renderGroupControls(battle) {
   const other = group.options.filter(option => !option.name && !option.disabled);
   const allReady = groups.every((g,i) => groupPick(g,i));
   return '<div class="dual-commands"><div class="dual-command-grid" aria-label="Pokémon sob seu controle">' + tabs +
-    '</div>' + (combatMenu === "move" && menu ? '<div class="dual-command-grid" aria-label="Golpes">' + menu + '</div>' : '') +
+    '</div>' + (combatMenu === "move" && menu ? '<h3 class="dual-active-name">Golpes de ' + esc(group.name) +
+      '</h3><div class="dual-command-grid dual-moves" aria-label="Golpes">' + menu + '</div>' : '') +
     (combatMenu === "switch" && other.length ? '<div class="dual-command-grid" aria-label="Trocas">' + other.map(option =>
       option.kind === "switch" && groups.some((g,i) => i !== slot && groupPick(g,i)?.command === option.command)
         ? '<button type="button" disabled>' + esc(option.label) + ' · Já selecionado</button>'
@@ -1583,7 +1677,7 @@ function battleMoveButton(move, action, args, details) {
 function renderTargetGrid(battle, slot, options) {
   const fixed = options.find(option => !option.target);
   const slots = battle.arenaSlots.flatMap((row, side) => Array.from({length:2}, (_, index) => {
-    const mon = row[index];
+    const mon = row[index]?.hp > 0 ? row[index] : null;
     const target = mon && options.find(option => option.target?.uid === mon.uid);
     const affected = mon && fixed?.affected?.includes(mon.uid);
     const choice = target || (affected ? fixed : null);
@@ -1607,15 +1701,15 @@ function arenaView(b, e) {
     own = b?.own,
     p = state.you;
   const teamBattle = b && b.mode !== "singles";
-  const ownActive = teamBattle ? b.ownActive : [own].filter(Boolean);
-  const foeActive = teamBattle ? b.foeActive : [foe].filter(Boolean);
-  const active = [...ownActive, ...foeActive];
+  const ownActive = teamBattle ? b.arenaSlots[1] : [own];
+  const foeActive = teamBattle ? b.arenaSlots[0] : [foe];
+  const active = [...ownActive, ...foeActive].filter(Boolean);
   const changed = (m) => oldBattle?.[m.uid] > m.hp;
   const hit = active
     .filter(Boolean)
     .filter(changed)
     .map((m) => m.uid);
-  if (hit.length) tone(true);
+  if (hit.length && !b?.timeline) tone(true);
   const lineup = (b?.ownActive || [own]).map(mon => mon?.uid || "").join(":");
   if (!oldBattle || lineup !== activeLineup) combatMenu = b ? "move" : "items";
   activeLineup = lineup;
@@ -1628,8 +1722,8 @@ function arenaView(b, e) {
     m
       ? '<div class="unit ' +
         side + (teamBattle ? " group-slot-" + index : "") +
-        (hit.includes(m.uid) ? " impact" : "") +
-        '">' +
+        (!b?.timeline && hit.includes(m.uid) ? " impact" : "") +
+        '" data-battle-unit="' + esc(m.position || "") + '"' + (!m.hp ? " hidden" : "") + '>' +
         sprite(m, side === "own") +
         (glitter.has(m.uid) ? '<span class="shiny-sparkles" aria-hidden="true"><i>✦</i><i>✧</i><i>✦</i><i>✧</i><i>✦</i></span>' : '') +
         "</div>"
@@ -1641,7 +1735,8 @@ function arenaView(b, e) {
     const effects = battleEffectChips(m.effects) + battleBoostChips(m.boosts) +
       battleEffectChips(b?.field?.[side], "side");
     return '<div class="vitals ' + side + '-hud' + (teamBattle ? ' group-slot-' + index : '') +
-      '" data-battle-hp="' + esc(m.uid) + '"><div class="vitals-heading"><strong>' +
+      '" data-battle-hp="' + esc(m.uid) + '" data-battle-position="' + esc(m.position || "") + '"' +
+      (!m.hp ? " hidden" : "") + '><div class="vitals-heading"><strong>' +
       esc(m.name) + '</strong><span>Nv. ' + m.level + '</span></div>' +
       (m.shiny ? '<span class="shiny-badge">✦ Shiny</span>' : '') +
       (status ? '<span class="combatStatus">' + esc(status) + '</span>' : '') +
@@ -1732,6 +1827,7 @@ const minigameNames = {
   pokemonQuiz: "Quem é esse Pokémon?",
   wires: "Cortes do Xurkitree", guess: "Adivinha",
   magnetic: "Campo Magnético", rhythm: "Ritmo do Toxtricity", sorter: "Esteira da Pokébola",
+  fog: "Hyperbeam in the Fog",
   elements: "Três Cartas", twentyOne: "21 da Equipe Rocket", claim: "Par ou Roubo",
 };
 const miniInstructions = {
@@ -1741,9 +1837,10 @@ const miniInstructions = {
   race: "Aperte quando o obstáculo chegar à marca. Os obstáculos ficam mais próximos e exigem mais precisão. Um choque elimina você. Se mais de um jogador chegar ao fim, eles empatam.",
   million: "Responda a cinco perguntas em 45 segundos. Mais acertos valem o primeiro lugar. Em caso de empate, quem terminar mais rápido fica na frente. Os três primeiros dividem ₽ 1.000.",
   pokemonQuiz: "Identifique cinco Pokémon pelas silhuetas em 45 segundos. Quem acertar mais vence. Em caso de empate, quem terminar mais rápido fica na frente. Até três jogadores dividem ₽ 1.000.",
-  wires: "Em dupla, cortem quatro fios na ordem indicada em até 60 segundos. Uma pessoa lê e envia as instruções. A outra vê e corta os fios. Um corte errado, fora da janela ou o fim do tempo provoca um choque.",
-  guess: "Uma pessoa pega os papéis e repassa as pistas. A outra tenta identificar o Pokémon digitando o nome. Vocês têm 60 segundos e podem tentar quantas vezes quiserem. A primeira dupla a acertar ganha.",
+  wires: "Em dupla, cortem quatro fios na ordem indicada em até 60 segundos. Uma pessoa lê o manual e repassa as instruções por voz. A outra vê e corta os fios. Um corte errado, fora da janela ou o fim do tempo provoca um choque.",
+  guess: "Uma pessoa lê as fitas das Butterfree e repassa as pistas. Só as Butterfree shiny carregam pistas verdadeiras. A outra pessoa digita o nome do Pokémon. Vocês têm 60 segundos e a primeira dupla a acertar ganha.",
   magnetic: "Use as setas ou WASD para fugir das casas marcadas antes da descarga. Sobreviva por até 50 segundos.",
+  fog: "Segure as setas ou WASD para voar e ajustar a mira. Quando o tempo acabar, a névoa se dissipa e todos disparam. A arena encolhe a cada disparo. Seja o último a sobreviver.",
   rhythm: "Aperte A, S, K ou L quando a nota da coluna cruzar a linha. Os combos dão pontos extras. A faixa dura 46 segundos.",
   sorter: "Separe as bolas antes que caiam. Use 1 para Poké Bola, 2 para Grande Bola e 3 para Ultra Bola. A esteira acelera durante 45 segundos.",
   elements: "Escolha uma carta por mão. Fogo vence Planta, Planta vence Água, Água vence Fogo. Receba +2 se tiver vantagem contra pelo menos um adversário. Cada carta é usada uma vez.",
@@ -1928,6 +2025,7 @@ function drawRound(s) {
   $("duelTeamScreen").inert = false;
   $("arena").inert = false;
   $("overlay").inert = false;
+  if (s.testLobby) return;
   if (s.phase === "minigame") {
     $("minigameScreen").inert = true;
     const options = (s.minigameOptions ?? [s.minigame]).map(id => [id, minigameNames[id]]);
@@ -2090,12 +2188,52 @@ function playPairFeedback(previous, current) {
       playNotes([[110,64,.22], [170,52,.24], [120,48,.3]]);
   } else if ((current.progress ?? 0) > (previous.progress ?? 0)) {
     playNotes([[780,300,.1], [520,660,.12]]);
-  } else if ((current.hints?.length ?? 0) > (previous.hints?.length ?? 0) ||
+  } else if ((current.captured?.length ?? current.hints?.length ?? 0) > (previous.captured?.length ?? previous.hints?.length ?? 0) ||
       current.messages.length > previous.messages.length) {
     playNotes([[620,860,.105]]);
   } else if (current.lastGuessAt && current.lastGuessAt !== previous.lastGuessAt) {
     playNotes([[350,160,.14]]);
   }
+}
+
+function clueButterfreeSprite(shiny) {
+  return '<img class="butterfree-sprite" alt="Butterfree" width="54" height="46" ' +
+    'src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/' +
+    (shiny ? 'shiny/' : '') + '12.png">';
+}
+
+let guessSpeciesOptions;
+let guessSpeciesRequest;
+function loadGuessSpecies() {
+  if (guessSpeciesOptions !== undefined || guessSpeciesRequest) return;
+  guessSpeciesRequest = fetch("/api/guide/species").then(response => {
+    if (!response.ok) throw Error("Pokédex indisponível.");
+    return response.json();
+  }).then(species => {
+    const names = new Set(species.map(pokemon => pokemon.name));
+    guessSpeciesOptions = [...names].map(name => '<option value="' + esc(name) + '"></option>').join("");
+    const list = $("pairGuessSpecies");
+    if (list) list.innerHTML = guessSpeciesOptions;
+  }).catch(() => {
+    // Guess by typing if the catalog is unavailable.
+  });
+}
+
+function renderClueButterfree(game) {
+  const caught = new Set(game.captured);
+  const pending = game.butterflies.filter(clue => !caught.has(clue.id));
+  const captured = game.butterflies.filter(clue => caught.has(clue.id));
+  return (pending.length ? '<div class="butterfree-grove" aria-label="Butterfree com fitas">' + pending.map(clue =>
+    '<div class="butterfree-flight" data-course="' + clue.course + '" style="--phase:-' + clue.phase +
+    'ms;--speed:' + clue.speed + 'ms"><button type="button" class="butterfree-clue" data-action="pairCatch"' +
+    ' data-args="' + esc(JSON.stringify({butterfly:clue.id})) + '">' +
+    clueButterfreeSprite(clue.shiny) +
+    '<span>' + esc(clue.text) + '</span></button></div>').join("") +
+    '</div>' : '') +
+    (captured.length ? '<ul class="wire-checklist">' + captured.map(clue =>
+      '<li class="butterfree-caught">' + clueButterfreeSprite(clue.shiny) + '<span>' + esc(clue.text) + '</span>' +
+      (game.messages.some(m => m.index === clue.id) ? ' <small>Enviada</small>' :
+        btn("Enviar pista", "pairRelay", {index:clue.id}, "primary")) + '</li>').join("") + '</ul>' : '');
 }
 
 function renderPairGame(s) {
@@ -2117,15 +2255,14 @@ function renderPairGame(s) {
     '<h3>' + esc(failed ? "Choque do Xurkitree!" : pairLabels[game.status]) + '</h3>' +
     (game.pokemon ? '<p>Era <strong>' + esc(game.pokemon.name) + '</strong>.</p>' : '') + result + '</div>';
 
-  const messages = '<ol class="pair-messages" aria-label="' + (wires ? "Instruções recebidas" : "Pistas recebidas") + '">' +
+  const messages = '<ol class="pair-messages" aria-label="Pistas recebidas">' +
     game.messages.map(message => '<li>' + esc(message.text) + '</li>').join("") +
     '</ol>';
   let board;
   if (wires && game.guide) {
     board = '<ol class="wire-checklist">' + game.instructions.map((step, index) =>
       '<li data-step="' + (index < game.progress ? "done" : index === game.progress ? "current" : "next") +
-      '">' + esc(step) + (index === game.progress && !game.messages.some(m => m.index === index)
-        ? btn("Enviar instrução", "pairRelay", {index}, "primary") : '') + '</li>').join("") + '</ol>';
+      '">' + esc(step) + '</li>').join("") + '</ol>';
   } else if (wires) {
     board = '<div class="wire-board">' + game.wires.map(wire => {
       const cut = game.cuts.includes(wire.id);
@@ -2136,7 +2273,12 @@ function renderPairGame(s) {
         esc((cut ? "Cortado: " : "Cortar: ") + wire.color + " " + wire.thickness) + '"' +
         (cut ? ' disabled' : '') + '><i></i><span>' + (wire.id + 1) + '</span></button>' +
         '<small>' + esc(wire.color) + '<br>' + esc(wire.thickness) + '</small></div>';
-    }).join("") + '</div>' + (game.messages.length ? messages : '<p>Aguardando as instruções da sua dupla…</p>');
+    }).join("") + '</div>' + (game.practiceSpeech
+      ? ("speechSynthesis" in window ? btn("Ouvir o Rival", "wireListen", {}, "primary") :
+        '<p>O treino por voz precisa da síntese de fala do navegador.</p>')
+      : '<p>Combine os cortes por voz com sua dupla.</p>');
+  } else if (game.guide && game.butterflies) {
+    board = renderClueButterfree(game);
   } else if (game.guide) {
     board = (game.hints.length < game.total ? '<div class="paper-field"><i></i><i></i>' +
       '<div class="paper-flight" style="--paper-delay:-' + (game.paper % 1600) + 'ms">' +
@@ -2147,14 +2289,15 @@ function renderPairGame(s) {
   } else {
     board = (game.messages.length ? messages : '<p>Aguardando as pistas da sua dupla…</p>') +
       '<form id="pairGuessForm"><label for="pairGuessName">Nome do Pokémon</label>' +
-      '<div><input id="pairGuessName" maxlength="60" autocomplete="off" required>' +
+      '<div><input id="pairGuessName" list="pairGuessSpecies" maxlength="60" autocomplete="off" required>' +
+      '<datalist id="pairGuessSpecies">' + (guessSpeciesOptions ?? '') + '</datalist>' +
       '<button type="submit" class="primary">Adivinhar</button></div></form>' +
       (game.lastGuessAt ? '<p role="status">Ainda não. Pode tentar de novo!</p>' : '');
   }
   return '<div class="pair-mini">' + status +
     (wires ? '<div class="pair-pokemon pair-live">' + sprite(xurkitree) + '</div>' : '') +
     '<h3>' + (wires ? (game.guide ? "Manual de cortes" : "Painel de fios") :
-      game.guide ? "Pegue os papéis" : "Qual é o Pokémon?") + '</h3>' +
+      game.guide ? (game.butterflies ? "Fitas das Butterfree" : "Pegue os papéis") : "Qual é o Pokémon?") + '</h3>' +
     (wires ? '<p class="pair-progress">' + game.progress + ' de ' + game.total + ' cortes corretos</p>' : '') +
     board + '</div>';
 }
@@ -2472,12 +2615,14 @@ function renderCardArcade(s) {
 
 function renderArcade(s) {
   const game = s.arcade;
+  if (s.minigame === "fog" && !game.results) return renderFog();
   if (!game.results) return game.events ? renderKeyboardArcade(s) : renderCardArcade(s);
   const players = new Map(s.players.map(p => [p.id, p]));
   return '<section class="arcade-panel arcade-finish"><h3>Resultado</h3><ol class="arcade-results">' + game.results.map(row => {
     const p = players.get(row.id);
     return '<li data-winner="' + row.won + '">' + trainerSprite(p.avatar, "") + '<b>' + esc(p.name) + '</b><span>' +
-      (row.score < 0 ? "Estourou" : row.score + (s.minigame === "magnetic" ? " · Sobrevivência" : " pontos")) +
+      (row.score < 0 ? "Estourou" : row.score + (s.minigame === "fog" ? " rodada(s) sobrevivida(s)" :
+        s.minigame === "magnetic" ? " · Sobrevivência" : " pontos")) +
       (row.won ? ' · Venceu' : '') + '</span></li>';
   }).join("") + '</ol>' + (s.you.done ? '<p>Aguardando o grupo…</p>' :
     btn("Continuar", "arcadeContinue", {}, "primary")) + '</section>';
@@ -2492,6 +2637,7 @@ function renderMinigame(s) {
   screen.dataset.game = s.minigame;
   if (s.minigame === "race" && s.race && !raceResultReady(s.race) && $("raceTrack")) return;
   if (s.arcade?.events && !s.arcade.results && $("arcadeStage")) return;
+  if (s.minigame === "fog" && !s.arcade.results && $("fogStage")) return;
   const title = minigameNames[s.minigame];
   let content;
   if (s.miniReady && s.miniReady.length < s.players.length) {
@@ -2523,6 +2669,7 @@ function renderMinigame(s) {
   } else content = renderAuction(s);
   screen.innerHTML = '<div class="mini-shell"><div class="mini-heading"><span>Rodada ' + s.round +
     '</span><h2>' + esc(title) + '</h2></div>' + content + '</div>';
+  if ($("pairGuessSpecies")) loadGuessSpecies();
   const clock = $("millionClock");
   if (clock) updateMiniClock(clock, s.million.deadline);
   const auctionClock = $("auctionClock");
@@ -2533,6 +2680,7 @@ function renderMinigame(s) {
   if (arcadeClock) updateMiniClock(arcadeClock, s.arcade.deadline);
   const arcadeStage = $("arcadeStage");
   if (arcadeStage) animateKeyboardArcade(arcadeStage, s);
+  if ($("fogStage")) animateFog($("fogStage"));
   const reveal = $("millionReveal");
   if (reveal) animateMillionReveal(reveal, s);
   if ($("raceTrack") && !raceFrame) raceFrame = requestAnimationFrame(animateRace);
@@ -2722,7 +2870,7 @@ function renderWorld() {
       const slot = ' data-slot="' + i + '" data-team="party"';
       if (!m) return '<span class="rail-empty"' + slot + ' aria-hidden="true"></span>';
       const drag = canReorder ? ' draggable="true" data-mon="' + esc(m.uid) + '"' : "";
-      return '<button type="button"' + slot + drag + ' data-drawer="team" aria-label="' +
+      return '<button type="button"' + slot + drag + ' data-pokemon-details="' + esc(m.uid) + '" aria-label="' +
         esc(m.name) + '">' + tokenMon(m) +
         '<progress aria-label="HP" value="' + m.hp + '" max="' + m.maxhp + '"></progress>' +
         "</button>";
@@ -2747,12 +2895,14 @@ function renderWorld() {
     document.body.classList.remove("fighting");
     return;
   }
-  if (practiceMode && s.phase === "final") {
+  if ((practiceMode || s.testLobby) && s.phase === "final") {
     const screen = $("minigameScreen");
     screen.hidden = false;
     screen.innerHTML = '<div class="mini-result"><h2>Treino concluído</h2>' +
       (p.notice ? '<p>' + esc(p.notice) + '</p>' : '') +
-      '<p>Escolha um minigame no menu para jogar de novo.</p></div>';
+      (s.testLobby ? (p.id === s.host ? btn("Voltar à sala", "reopenTestLobby", {}, "primary") :
+        '<p>Aguardando o anfitrião voltar à sala.</p>') + btn("Sair", "home") :
+        '<p>Escolha um minigame no menu para jogar de novo.</p>') + '</div>';
     return;
   }
   if (s.phase === "final") {
@@ -2787,12 +2937,11 @@ function renderWorld() {
     $("arena").innerHTML = arenaView(b, e);
     const log = $("battleLog");
     log.scrollTop = scroll ?? log.scrollHeight;
-    if (b) playDualLog(s, b, !e);
     const active = [...(b?.ownActive || [b?.own]), ...(b?.foeActive || [b?.foe || e?.wild])];
     for (const m of active) {
       if (!m || previous?.[m.uid] == null) continue;
       const hud = $("arena").querySelector('[data-battle-hp="' + CSS.escape(m.uid) + '"]');
-      animateHP(hud?.querySelector("progress"), previous[m.uid], m.hp);
+      if (!b?.timeline) animateHP(hud?.querySelector("progress"), previous[m.uid], m.hp);
     }
 
     $("overlay").hidden = true;
@@ -2866,7 +3015,7 @@ initializeScreen();
 poll();
 function pollNext() {
   poll().finally(() => setTimeout(pollNext, state?.minigame === "race" ? 85 :
-    state?.arcade?.events ? 150 : state?.pairGame || state?.arcade ? 350 : 1100));
+    state?.arcade?.events || state?.minigame === "fog" ? 150 : state?.pairGame || state?.arcade ? 350 : 1100));
 }
 setTimeout(pollNext, 1100);
 
@@ -3047,13 +3196,6 @@ function battleEnding(won, message) {
   stage.hidden = false;
   stage.querySelector(".console")?.remove();
   document.body.append(stage);
-  const loser = stage.querySelector(won ? ".foe" : ".own"),
-    hp = stage.querySelector(won ? ".foe-hud progress" : ".own-hud progress");
-  if (hp) animateHP(hp, hp.value, 0);
-  setTimeout(
-    () => loser?.querySelector(".fighter")?.classList.add("fall"),
-    270,
-  );
   setTimeout(() => {
     const box = document.createElement("div");
     box.className = "resultBox";
@@ -3438,6 +3580,10 @@ function jobBoard(p, facility) {
     const workplace = job.facility === "lab" && !state.laboratory ? "Vilas com laboratório" : job.place ? locName(place) :
       facilityNames[job.facility] + " de " + locName(place);
     const requirement = job.requirement;
+    const qualified = p.party.filter(mon => requirement.eligible.includes(mon.uid));
+    const teamSlots = requirement.requiredPokemon ? '<div class="job-team-slots" aria-hidden="true">' +
+      Array.from({length:requirement.requiredPokemon}, (_, index) => qualified[index] ?
+        tokenMon(qualified[index]) : '<span class="job-team-empty">+</span>').join("") + '</div>' : '';
     const progress = requirement.target
       ? '<progress aria-label="Progresso do requisito de XP" value="' +
         Math.min(requirement.current, requirement.target) + '" max="' + requirement.target + '"></progress>'
@@ -3451,21 +3597,19 @@ function jobBoard(p, facility) {
       '</i><b>' + esc(job.name) + '</b></div>';
     return '<article data-job="' + id + '">' +
       heading + '<span>Grau ' + (job.rank + 1) + ' · ' + esc(workplace) + '</span><strong class="job-pay">₽ ' + job.pay + '</strong>' +
-      (job.limit ? '<small>Até ' + job.limit + (job.limit === 1 ? ' turno' : ' turnos') + ' por rodada</small>' : '') +
       '<div class="post-requirement">' + (requirement.text === "Nenhum" ? "" :
-        '<small>' + esc(requirement.text) + '</small>') + progress + '</div>' + action + '</article>';
+        '<small>' + esc(requirement.text) + '</small>') + teamSlots + progress + '</div>' + action + '</article>';
   }).join("") + '</div>';
 }
 
 function workOption(p, facility, showIcons = false) {
   const job = state.jobs[p.job];
   return job && p.jobLocation === p.loc && job.facility === facility
-    ? '<p>' + (showIcons ? uiIcon("person") : '') + esc(job.name) + ' · ₽ ' + job.pay + ' por turno de trabalho</p>' +
-      (job.limit && job.shifts >= job.limit ? '<small>Limite de turnos desta rodada atingido.</small>' :
-        job.requirement.met ? (showIcons
+    ? '<p>' + (showIcons ? uiIcon("person") : '') + esc(job.name) + ' · ₽ ' + job.pay + ' por ação</p>' +
+      (job.requirement.met ? (showIcons
           ? '<button type="button" data-action="work" data-args="{}">' + uiIcon("map-post") + 'Trabalhar · 1 ação</button>'
           : btn("Trabalhar · 1 ação", "work")) :
-        '<small>' + esc(job.requirement.text) + '</small>')
+        '<button type="button" disabled>Trabalhar</button><small>' + esc(job.requirement.text) + '</small>')
     : "";
 }
 
@@ -3502,7 +3646,6 @@ function biomeActions(p) {
   if (Object.values(state.jobs).some(job => job.place === p.loc)) {
     const reason = vacancy?.place !== p.loc || p.jobLocation !== p.loc
       ? "Assuma uma vaga deste bioma no Posto de trabalho."
-      : vacancy.limit && vacancy.shifts >= vacancy.limit ? "Limite de turnos desta rodada atingido."
       : vacancy.requirement.met ? "" : vacancy.requirement.text;
     const button = '<button type="button" class="biome-action biome-work" data-action="work"' +
       (reason ? ' disabled' : '') + '>' + uiIcon("map-post") + 'Trabalhar</button>';

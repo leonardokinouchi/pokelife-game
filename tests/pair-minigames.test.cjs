@@ -29,8 +29,10 @@ test("wires separate the roles and enforce order, timing, progress and timeout",
   assert.equal(new Set(winning.wires.map(w => w.thickness)).size, 3);
   assert.throws(() => pairAction(room, actor, "pairRelay", {index:0}, deadline - 59000));
   assert.throws(() => pairAction(room, guide, "pairCut", {index:0, wire:0}, deadline - 59000));
-  pairAction(room, guide, "pairRelay", {index:0}, deadline - 59000);
-  assert.equal(view(room, actor).pairGame.messages.length, 1);
+  assert.throws(() => pairAction(room, guide, "pairRelay", {index:0}, deadline - 59000));
+  winning.messages.push({index:0, text:winning.instructions[0].text});
+  assert.equal(view(room, actor).pairGame.messages.length, 0);
+  assert.equal(view(room, actor).pairGame.practiceSpeech, undefined);
   assert.equal(view(room, get(idle.actor)).pairGame.messages.length, 0);
   const [first, timed] = shocked.instructions;
   pairAction(room, get(shocked.actor), "pairCut", {index:0, wire:first.wire}, deadline - 58000);
@@ -57,15 +59,21 @@ test("Adivinha only releases collected clues to the partner and ends on the firs
   const guide = playerById(team.guide);
   const actor = playerById(team.actor);
   const now = room.pairGame.deadline - 53000;
-  assert.deepEqual(view(room, guide).pairGame.hints, []);
-  assert.equal(view(room, actor).pairGame.hints, undefined);
+  const guideView = view(room, guide).pairGame;
+  assert.deepEqual(guideView.captured, []);
+  assert.equal(guideView.butterflies.length, 7);
+  assert.deepEqual(guideView.butterflies.filter(clue => clue.shiny).map(clue => clue.text).sort(), [...team.hints].sort());
+  assert.equal(view(room, actor).pairGame.butterflies, undefined);
   assert.equal(view(room, actor).pairGame.pokemon, undefined);
   assert.throws(() => pairAction(room, guide, "pairRelay", {index:0}, now));
-  const paper = team.paper;
-  pairAction(room, guide, "pairCatch", {paper}, now);
-  assert.throws(() => pairAction(room, guide, "pairCatch", {paper}, now));
-  pairAction(room, guide, "pairRelay", {index:0}, now);
-  assert.equal(view(room, actor).pairGame.messages[0].text, team.hints[0]);
+  for (const shiny of [false, true]) {
+    const clue = guideView.butterflies.find(clue => clue.shiny === shiny);
+    pairAction(room, guide, "pairCatch", {butterfly:clue.id}, now);
+    assert.throws(() => pairAction(room, guide, "pairCatch", {butterfly:clue.id}, now));
+    pairAction(room, guide, "pairRelay", {index:clue.id}, now);
+    assert.equal(view(room, actor).pairGame.messages.at(-1).text, clue.text);
+    assert.equal(view(room, actor).pairGame.messages.at(-1).shiny, undefined);
+  }
   assert.equal(view(room, playerById(other.actor)).pairGame.messages.length, 0);
   pairAction(room, actor, "pairGuess", {name:"errado"}, now);
   assert.equal(room.pairGame.finished, false);

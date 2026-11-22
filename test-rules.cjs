@@ -5,6 +5,14 @@ const rules = require("./rules.cjs");
 const data = require("./data/rules.json");
 const { Dex } = require("@pkmn/sim");
 
+test("wild encounter guide excludes Dragonite below its evolution level", () => {
+  const appears = level => ["campo", "floresta", "caverna", "praia", "lago", "neve", "vulcao", "cidade"]
+    .some(biome => ["day", "dusk", "night"].some(period =>
+      rules.encounterGuide(biome, period, level).some(mon => mon.name === "Dragonite")));
+  assert.equal(appears(51), false);
+  assert.equal(appears(55), true);
+});
+
 test("all 1,025 species and their battle records have simulator IDs", () => {
   assert.equal(data.mons.filter((m) => m.isDefault).length, 1025);
   for (const row of data.mons) {

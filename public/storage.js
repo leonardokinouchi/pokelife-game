@@ -1,5 +1,51 @@
 let boxPage = 0,
   selectedMon = "";
+
+function openPokemonDetails(uid) {
+  const mon = [...state.you.party, ...state.you.box].find(pokemon => pokemon.uid === uid);
+  if (!mon) return;
+  const dialog = $("pokemonDetails");
+  const stats = {hp:"PV", atk:"Ataque", def:"Defesa", spa:"Ataque Esp.", spd:"Defesa Esp.", spe:"Velocidade"};
+  const itemName = id => state.shop[id]?.name || id.replaceAll("-", " ");
+  const evolutions = state.you.evolutionsByPokemon?.[mon.pokemonId] || [];
+  const requirements = rule => [
+    rule.minimum_level && "Nível " + rule.minimum_level,
+    rule.item && "Usar " + itemName(rule.item),
+    rule.trigger === "trade" && "Trocar" + (rule.tradeTarget ? " por " + rule.tradeTarget : ""),
+    rule.heldItem && "Equipar " + itemName(rule.heldItem),
+    rule.minimum_happiness && "Felicidade " + rule.minimum_happiness + "+",
+    rule.time_of_day && ({day:"Durante o dia", dusk:"Durante a tarde", night:"Durante a noite"}[rule.time_of_day] || rule.time_of_day),
+    rule.gender_id && (rule.gender_id === 1 ? "Fêmea" : "Macho"),
+    rule.knownMove && "Conhecer " + rule.knownMove.replaceAll("-", " "),
+    rule.knownType && "Conhecer golpe de " + (moveTypes[rule.knownType[0].toUpperCase() + rule.knownType.slice(1)] || rule.knownType),
+    rule.partyType && "Ter na equipe um Pokémon do tipo " + (moveTypes[rule.partyType[0].toUpperCase() + rule.partyType.slice(1)] || rule.partyType),
+    rule.parentParty && "Ter " + rule.parentParty + " na equipe",
+    rule.relative_physical_stats !== undefined &&
+      ["Ataque menor que Defesa", "Ataque igual à Defesa", "Ataque maior que Defesa"][rule.relative_physical_stats + 1],
+    rule.region_id && "Região específica",
+    rule.needs_overworld_rain && "Evoluir sob chuva",
+    rule.usedMove && "Usar " + rule.usedMove.replaceAll("-", " ") + " " + (rule.minimum_move_count || 1) + " vez(es)",
+    rule.minimum_damage_taken && "Receber " + rule.minimum_damage_taken + " de dano",
+  ].filter(Boolean).join(" · ");
+  dialog.innerHTML = '<header><div class="pokemon-details-sprite">' + tokenMon(mon) +
+    '</div><div><h2 id="pokemonDetailsTitle">' + esc(mon.name) + '</h2><p>Nv. ' + mon.level +
+    ' · ' + esc(mon.types.map(type => moveTypes[type[0].toUpperCase() + type.slice(1)] || type).join(" / ")) +
+    '</p></div><form method="dialog"><button aria-label="Fechar">×</button></form></header>' +
+    '<div class="pokemon-details-info"><section><h3>Atributos</h3><dl class="pokemon-detail-stats">' +
+    Object.entries(stats).map(([key,label]) => '<div><dt>' + label + '</dt><dd>' +
+      (key === "hp" ? mon.hp + "/" + mon.maxhp : mon.stats[key]) + '</dd></div>').join("") +
+    '</dl><dl class="pokemon-detail-stats"><div><dt>Natureza</dt><dd>' + esc(mon.nature || "Neutra (padrão)") +
+    '</dd></div><div><dt>Habilidade</dt><dd>' + esc(mon.ability || "—") +
+    '</dd></div><div><dt>Felicidade</dt><dd>' + mon.happiness + '/255</dd></div><div><dt>Item equipado</dt><dd>' +
+    esc(mon.heldItem ? itemName(mon.heldItem) : "—") + '</dd></div></dl></section>' +
+    '<section><h3>Evoluções</h3>' + (evolutions.length ? '<ul>' + evolutions.map(rule =>
+      '<li><b>' + esc(rule.name) + '</b><small>' +
+      esc(requirements(rule) || (rule.trigger === "level-up" ? "Ao subir de nível" : "Condição especial")) + '</small></li>').join("") +
+      '</ul>' : '<p>Sem evoluções registradas.</p>') + '<h3>Golpes</h3><ul>' +
+      mon.moves.map(move => '<li>' + esc(move.replaceAll("-", " ")) + '</li>').join("") +
+      '</ul></section></div>';
+  dialog.showModal();
+}
 function profile() {
   const p = state.you;
   const job = state.jobs[p.job];
@@ -188,6 +234,10 @@ document.addEventListener("contextmenu", (e) => {
 document.addEventListener("click", (e) => {
   const b = e.target.closest("button");
   if (!b) return;
+  if (b.dataset.pokemonDetails) {
+    openPokemonDetails(b.dataset.pokemonDetails);
+    return;
+  }
   if (b.dataset.page) {
     boxPage = Math.max(0, Math.min(state.you.boxCapacity / 30 - 1, boxPage + Number(b.dataset.page)));
     selectedMon = "";
@@ -195,6 +245,7 @@ document.addEventListener("click", (e) => {
   } else if (b.hasAttribute("data-clear-mon") || b.matches(".pcSlot")) {
     selectedMon = b.dataset.mon || "";
     render();
+    if (selectedMon) openPokemonDetails(selectedMon);
   }
 });
 const pokemonDragType = "application/x-aurora-pokemon";

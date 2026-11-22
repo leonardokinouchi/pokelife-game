@@ -1,8 +1,9 @@
 const {randomInt} = require("node:crypto");
+const {initFog, beginFog, moveFog, advanceFog, fogView} = require("./fog.cjs");
 
 const keyboardGames = ["magnetic", "rhythm", "sorter"];
 const cardGames = ["elements", "twentyOne", "claim"];
-const arcadeGames = [...keyboardGames, ...cardGames];
+const arcadeGames = [...keyboardGames, ...cardGames, "fog"];
 const durations = {magnetic:50000, rhythm:46000, sorter:45000};
 const cardDuration = {elements:9000, twentyOne:12000, claim:8500};
 const types = ["Fogo", "Água", "Planta"];
@@ -48,7 +49,8 @@ function newArcade(room) {
       alive:true, movedAt:null, choice:null, standing:false, hand:[],
     }])),
   };
-  if (keyboardGames.includes(kind)) game.events = schedule(kind);
+  if (kind === "fog") initFog(game);
+  else if (keyboardGames.includes(kind)) game.events = schedule(kind);
   else if (kind === "elements") {
     const values = shuffle([2, 3, 4]);
     for (const p of Object.values(game.players)) p.hand = types.map((type, i) => ({type, value:values[i]}));
@@ -65,6 +67,7 @@ function newArcade(room) {
 function beginArcade(room, now = Date.now()) {
   const game = room.arcade;
   const kind = room.minigame;
+  if (kind === "fog") return beginFog(game, now);
   game.start = now + (kind === "rhythm" || kind === "sorter" ? 3000 : 0);
   game.deadline = game.start + (durations[kind] ?? cardDuration[kind]);
 }
@@ -213,6 +216,7 @@ function advanceKeyboard(room, now) {
 function advanceArcade(room, now = Date.now()) {
   const game = room.arcade;
   if (room.phase !== "minigame" || !game || game.start == null || game.results) return false;
+  if (room.minigame === "fog") return advanceFog(room, now);
   return game.events ? advanceKeyboard(room, now) : advanceCards(room, now);
 }
 
@@ -222,7 +226,8 @@ function arcadeAction(room, player, action, data, now = Date.now()) {
   if (game.start == null || game.results || game.revealUntil !== null || now >= game.deadline)
     throw Error("Essa etapa já terminou.");
   if (now < game.start) throw Error("Aguarde a contagem regressiva.");
-  if (kind === "magnetic" && action === "arcadeMove") {
+  if (kind === "fog" && action === "fogMove") moveFog(game, p, data, now);
+  else if (kind === "magnetic" && action === "arcadeMove") {
     const delta = {up:[0,-1], down:[0,1], left:[-1,0], right:[1,0]}[data.direction];
     if (!Array.isArray(delta) || !p.alive) throw Error("Movimento indisponível.");
     if (p.movedAt != null && now - p.movedAt < 75) return;
@@ -254,6 +259,7 @@ function arcadeAction(room, player, action, data, now = Date.now()) {
 
 function arcadeView(room, player) {
   const {arcade:game, minigame:kind} = room;
+  if (kind === "fog") return fogView(game, player.id);
   const you = game.players[player.id];
   const openHands = kind === "twentyOne";
   return {

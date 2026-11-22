@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "start": "node --watch-path=server.cjs --watch-path=realtime.cjs --watch-path=game.cjs --watch-path=battle.cjs --watch-path=rules.cjs --watch-path=million.cjs --watch-path=pair-minigames.cjs --watch-path=arcade.cjs --watch-path=public --watch-path=data server.cjs",
+    "start": "node --watch-path=server.cjs --watch-path=realtime.cjs --watch-path=game.cjs --watch-path=battle.cjs --watch-path=rules.cjs --watch-path=million.cjs --watch-path=pair-minigames.cjs --watch-path=arcade.cjs --watch-path=fog.cjs --watch-path=public --watch-path=data server.cjs",
     "test": "node --test test-rules.cjs tests/*.test.cjs"
   },
   "engines": {

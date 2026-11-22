@@ -124,8 +124,15 @@ function handleAction(d, roomCode, r, save, realtimeSession) {
     if (d.action === "create") {
       p = player(name, d.avatar);
       r = newRoom(roomCode, p);
+      if (d.testLobby === true) {
+        r.testLobby = true;
+        r.practiceExpires = Date.now() + 2 * 60 * 60 * 1000;
+        p.money = 300;
+      }
     } else {
       if (!r || r.phase !== "lobby") throw Error("Sala indisponível.");
+      if (Boolean(r.testLobby) !== (d.testLobby === true))
+        throw Error(r.testLobby ? "Use o lobby de teste para entrar nesta sala." : "Este código pertence a uma sala de expedição.");
       if (r.players.length >= maxPlayers) throw Error("Sala cheia. O limite é de 12 treinadores.");
       if (
         r.players.some((q) => q.name.toLowerCase() === name.toLowerCase())
@@ -136,6 +143,7 @@ function handleAction(d, roomCode, r, save, realtimeSession) {
       if (!Object.hasOwn(avatars, avatar)) throw Error("Personagem indisponível.");
       if (usedAvatars.has(avatar)) throw Error("Esse personagem já está em uso.");
       p = player(name, avatar);
+      if (r.testLobby) p.money = 300;
       r.players.push(p);
     }
     save(r);
@@ -143,6 +151,18 @@ function handleAction(d, roomCode, r, save, realtimeSession) {
   }
   p = r?.players.find((x) => x.token === d.token);
   if (!p) return answer(403, { error: "Sessão expirada." });
+  if (d.action === "reopenTestLobby") {
+    if (!r.testLobby || r.phase !== "final" || p.id !== r.host)
+      return answer(409, {error:"Só o anfitrião pode reabrir um teste concluído."});
+    const next = newRoom(r.code, p);
+    next.testLobby = true;
+    next.practiceExpires = r.practiceExpires;
+    next.players = r.players.map(q => ({
+      ...player(q.name, q.avatar), id:q.id, token:q.token, money:300,
+    }));
+    save(next);
+    return answer(200, {state:view(next, next.players.find(q => q.id === p.id)), clock:Date.now()});
+  }
   if (d.action === "peerSignal") {
     if (r.practiceBot || r.phase !== "minigame" || d.round !== r.round || d.kind !== r.minigame ||
         !["magnetic", "race", "rhythm", "sorter"].includes(d.kind))

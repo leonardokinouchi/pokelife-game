@@ -75,7 +75,7 @@ function listEffects(states) {
 
 function battleLog(line, viewer) {
   const [, event, first = "", second = "", third = ""] = line.split("|");
-  const who = first.replace(/^p[12][a-z]?: /, "");
+  const who = first.replace(/^p[1-4][a-z]?: /, "");
   switch (event) {
     case "move":
       return who + " usou " + second + ".";
@@ -106,7 +106,9 @@ function battleLog(line, viewer) {
       if (second === "confusion") return who + " está confuso!";
       return who + " ativou " + effectName(second) + ".";
     case "-damage":
-      return third === "[from] confusion" ? who + " se machucou na confusão!" : null;
+      return third === "[from] confusion" ? who + " se machucou na confusão!" : who + " perdeu PV.";
+    case "-heal":
+      return who + " recuperou PV.";
     case "-boost":
     case "-unboost":
       return (statLabels[second] || second) + " de " + who +
@@ -399,6 +401,7 @@ class BattleSession {
       const mon = this.roster.get(pm);
       return {
         uid: mon.uid,
+        position: pm.getSlot(),
         name: pm.name,
         species: pm.species.name,
         slug: mon.slug,
@@ -423,6 +426,7 @@ class BattleSession {
     const choices = this.engine.gameType === "singles" ? this.choices(id) : [];
     const groups = this.engine.gameType === "singles" ? [] : this.groupChoices(id);
     const log = [];
+    const timeline = [];
     for (let i = 0; i < this.engine.log.length; i++) {
       if (this.engine.log[i].startsWith("|split|")) {
         i++; // Skip the private variant. Process the public line on the next iteration.
@@ -430,6 +434,26 @@ class BattleSession {
       }
       const text = battleLog(this.engine.log[i], id);
       if (text) log.push(text);
+      const [, kind, actor, value] = this.engine.log[i].split("|");
+      if (["move", "-damage", "-heal", "faint", "switch", "drag"].includes(kind) &&
+          /^p[1-4][a-z]: /.test(actor || "")) {
+        const position = actor.slice(0, 3);
+        const entry = {index:i, kind, position, text};
+        if (["-damage", "-heal", "switch", "drag"].includes(kind)) {
+          const condition = kind === "switch" || kind === "drag" ? this.engine.log[i].split("|")[4] : value;
+          const [hp, max] = (condition || "").split(" ")[0].split("/").map(Number);
+          entry.hp = max ? hp / max : hp === 0 ? 0 : null;
+        }
+        if (kind === "switch" || kind === "drag") {
+          const side = this.engine.getSide(position.slice(0, 2));
+          const name = actor.slice(5);
+          const species = value.split(",")[0];
+          const incoming = side.pokemon.find(pm => pm.name === name && pm.species.name === species) ||
+            side.pokemon.find(pm => pm.name === name);
+          if (incoming) entry.mon = {...describe(incoming), position};
+        }
+        timeline.push(entry);
+      }
     }
     return {
       field: {
@@ -456,6 +480,8 @@ class BattleSession {
       choices,
       log,
       logCount: log.length,
+      timeline,
+      timelineLength: this.engine.log.length,
     };
   }
 }

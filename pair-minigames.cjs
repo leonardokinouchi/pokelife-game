@@ -1,47 +1,84 @@
 const { randomInt } = require("node:crypto");
-const { silhouetteSpecies } = require("./rules.cjs");
+const { silhouetteSpecies, info } = require("./rules.cjs");
 
 const isPairMinigame = kind => kind === "wires" || kind === "guess";
 const normalize = name => name.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().replace(/[^a-z0-9]/g, "");
 const colors = ["vermelho", "azul", "amarelo", "verde", "roxo", "laranja", "rosa"];
 const thicknesses = ["fino", "médio", "grosso"];
-const clues = [
-  ["Charizard", "É do tipo Fogo e Voador.", "Tem duas asas e uma cauda em chamas.", "É a última evolução de Charmander."],
-  ["Blastoise", "É do tipo Água.", "Parece uma tartaruga grande.", "Tem dois canhões no casco."],
-  ["Venusaur", "É do tipo Planta e Venenoso.", "Tem uma flor enorme nas costas.", "É a última evolução de Bulbasaur."],
-  ["Pikachu", "É do tipo Elétrico.", "Tem bochechas vermelhas.", "Sua cauda parece um raio."],
-  ["Eevee", "É do tipo Normal.", "É pequeno e tem uma gola de pelos.", "Pode evoluir em oito Pokémon diferentes."],
-  ["Snorlax", "É do tipo Normal.", "É grande e pesado.", "É conhecido por dormir bloqueando caminhos."],
-  ["Gengar", "É do tipo Fantasma e Venenoso.", "Tem um sorriso enorme.", "É a última evolução de Gastly."],
-  ["Machamp", "É do tipo Lutador.", "Tem quatro braços.", "É a última evolução de Machop."],
-  ["Onix", "É do tipo Pedra e Terra.", "É grande e vive em túneis.", "Parece uma serpente feita de pedras."],
-  ["Lapras", "É do tipo Água e Gelo.", "É grande e tem casco nas costas.", "Pode transportar pessoas sobre a água."],
-  ["Ditto", "É do tipo Normal.", "Tem um corpo rosa e amorfo.", "Pode se transformar em outros Pokémon."],
-  ["Jigglypuff", "É do tipo Normal e Fada.", "É rosa e redondo.", "Seu canto faz os ouvintes dormirem."],
-  ["Dragonite", "É do tipo Dragão e Voador.", "Tem corpo alaranjado e asas pequenas.", "É a última evolução de Dratini."],
-  ["Gyarados", "É do tipo Água e Voador.", "Parece uma serpente longa e azul.", "Evolui de Magikarp."],
-  ["Scizor", "É do tipo Inseto e Aço.", "Tem corpo vermelho e pinças grandes.", "Evolui de Scyther com um Revestimento Metálico."],
-  ["Ampharos", "É do tipo Elétrico.", "É amarelo e tem pescoço comprido.", "A esfera na cauda brilha como um farol."],
-  ["Sudowoodo", "É do tipo Pedra.", "Gosta de ficar parado.", "Imita a aparência de uma árvore."],
-  ["Tyranitar", "É do tipo Pedra e Sombrio.", "Tem uma armadura verde e espinhos.", "É a última evolução de Larvitar."],
-  ["Blaziken", "É do tipo Fogo e Lutador.", "Tem pernas fortes e solta chamas pelos pulsos.", "É a última evolução de Torchic."],
-  ["Swampert", "É do tipo Água e Terra.", "É robusto e tem nadadeiras na cabeça.", "É a última evolução de Mudkip."],
-  ["Gardevoir", "É do tipo Psíquico e Fada.", "Seu corpo lembra um vestido branco.", "É uma das evoluções de Kirlia."],
-  ["Sableye", "É do tipo Sombrio e Fantasma.", "É pequeno e vive em cavernas.", "Tem pedras preciosas no lugar dos olhos."],
-  ["Metagross", "É do tipo Aço e Psíquico.", "Tem quatro pernas e um X no rosto.", "É a última evolução de Beldum."],
-  ["Lucario", "É do tipo Lutador e Aço.", "Tem um espinho no peito.", "Pode sentir a aura de outros seres."],
-  ["Garchomp", "É do tipo Dragão e Terra.", "Parece um tubarão terrestre.", "É a última evolução de Gible."],
-  ["Rotom", "Sua forma normal é do tipo Elétrico e Fantasma.", "É pequeno e parece feito de plasma.", "Pode possuir eletrodomésticos."],
-  ["Emolga", "É do tipo Elétrico e Voador.", "Tem bochechas amarelas.", "Parece um esquilo-voador."],
-  ["Volcarona", "É do tipo Inseto e Fogo.", "Parece uma mariposa com asas alaranjadas.", "Evolui de Larvesta."],
-  ["Greninja", "É do tipo Água e Sombrio.", "Parece um sapo ninja.", "Usa a língua como cachecol."],
-  ["Sylveon", "É do tipo Fada.", "Tem laços e longas fitas.", "É uma evolução de Eevee."],
-  ["Talonflame", "É do tipo Fogo e Voador.", "Parece um falcão de peito alaranjado.", "É a última evolução de Fletchling."],
-  ["Mimikyu", "É do tipo Fantasma e Fada.", "Vive escondido sob um pano.", "Seu disfarce imita Pikachu."],
-  ["Decidueye", "Sua forma de Alola é do tipo Planta e Fantasma.", "Parece uma coruja de capuz.", "Dispara penas como flechas."],
-  ["Corviknight", "É do tipo Voador e Aço.", "Parece um corvo grande com armadura escura.", "Transporta passageiros em Galar."],
-  ["Dubwool", "É do tipo Normal.", "Tem lã branca com manchas escuras.", "Evolui de Wooloo."],
-  ["Tinkaton", "É do tipo Fada e Aço.", "É rosa e carrega uma arma enorme.", "Sua arma é um martelo de metal."],
+// Pokédex: nome, geração, altura em dm, peso em hg, cor e estágio.
+const clueSpecies = [
+  ["Charizard", 1, 17, 905, 8, 3],
+  ["Blastoise", 1, 16, 855, 2, 3],
+  ["Venusaur", 1, 20, 1000, 5, 3],
+  ["Pikachu", 1, 4, 60, 10, 2],
+  ["Eevee", 1, 3, 65, 3, 1],
+  ["Snorlax", 1, 21, 4600, 1, 3],
+  ["Gengar", 1, 15, 405, 7, 3],
+  ["Machamp", 1, 16, 1300, 4, 3],
+  ["Onix", 1, 88, 2100, 4, 1],
+  ["Lapras", 1, 25, 2200, 2, 0],
+  ["Ditto", 1, 3, 40, 7, 0],
+  ["Jigglypuff", 1, 5, 55, 6, 2],
+  ["Dragonite", 1, 22, 2100, 3, 3],
+  ["Gyarados", 1, 65, 2350, 2, 3],
+  ["Scizor", 2, 18, 1180, 8, 3],
+  ["Ampharos", 2, 14, 615, 10, 3],
+  ["Sudowoodo", 2, 12, 380, 3, 3],
+  ["Tyranitar", 2, 20, 2020, 5, 3],
+  ["Blaziken", 3, 19, 520, 8, 3],
+  ["Swampert", 3, 15, 819, 2, 3],
+  ["Gardevoir", 3, 16, 484, 9, 3],
+  ["Sableye", 3, 5, 110, 7, 0],
+  ["Metagross", 3, 16, 5500, 2, 3],
+  ["Lucario", 4, 12, 540, 2, 3],
+  ["Garchomp", 4, 19, 950, 2, 3],
+  ["Rotom", 4, 3, 3, 8, 0],
+  ["Emolga", 5, 4, 50, 9, 0],
+  ["Volcarona", 5, 16, 460, 9, 3],
+  ["Greninja", 6, 15, 400, 2, 3],
+  ["Sylveon", 6, 10, 235, 6, 3],
+  ["Talonflame", 6, 12, 245, 8, 3],
+  ["Mimikyu", 7, 2, 7, 10, 0],
+  ["Decidueye", 7, 16, 366, 3, 3],
+  ["Corviknight", 8, 22, 750, 7, 3],
+  ["Dubwool", 8, 13, 430, 9, 3],
+  ["Tinkaton", 9, 7, 1128, 6, 3],
+  ["Bulbasaur", 1, 7, 69, 5, 1],
+  ["Squirtle", 1, 5, 90, 2, 1],
+  ["Vulpix", 1, 6, 99, 3, 1],
+  ["Growlithe", 1, 7, 190, 3, 1],
+  ["Psyduck", 1, 8, 196, 10, 1],
+  ["Abra", 1, 9, 195, 3, 1],
+  ["Slowpoke", 1, 12, 360, 6, 1],
+  ["Cubone", 1, 4, 65, 3, 1],
+  ["Staryu", 1, 8, 345, 3, 1],
+  ["Magikarp", 1, 9, 100, 8, 1],
+  ["Aerodactyl", 1, 18, 590, 7, 0],
+  ["Mewtwo", 1, 20, 1220, 7, 0],
+  ["Chikorita", 2, 9, 64, 5, 1],
+  ["Cyndaquil", 2, 5, 79, 10, 1],
+  ["Totodile", 2, 6, 95, 2, 1],
+  ["Togepi", 2, 3, 15, 9, 1],
+  ["Marill", 2, 4, 85, 2, 2],
+  ["Umbreon", 2, 10, 270, 1, 3],
+  ["Steelix", 2, 92, 4000, 4, 3],
+  ["Houndoom", 2, 14, 350, 1, 3],
+  ["Treecko", 3, 5, 50, 5, 1],
+  ["Mudkip", 3, 4, 76, 2, 1],
+  ["Lotad", 3, 5, 26, 5, 1],
+  ["Flygon", 3, 20, 820, 5, 3],
+  ["Milotic", 3, 62, 1620, 6, 3],
+  ["Absol", 3, 12, 470, 9, 0],
+  ["Piplup", 4, 4, 52, 2, 1],
+  ["Shinx", 4, 5, 95, 2, 1],
+  ["Drifloon", 4, 4, 12, 7, 1],
+  ["Croagunk", 4, 7, 230, 2, 1],
+  ["Zorua", 5, 7, 125, 4, 1],
+  ["Axew", 5, 6, 180, 5, 1],
+  ["Noivern", 6, 15, 850, 7, 3],
+  ["Rockruff", 7, 5, 92, 3, 1],
+  ["Wooloo", 8, 6, 60, 9, 1],
+  ["Pawmi", 9, 3, 25, 10, 1],
 ];
 
 function shuffle(values) {
@@ -72,19 +109,67 @@ function wirePuzzle() {
   ] };
 }
 
+const typeNames = {
+  normal:"Normal", fire:"Fogo", water:"Água", electric:"Elétrico", grass:"Planta",
+  ice:"Gelo", fighting:"Lutador", poison:"Venenoso", ground:"Terra", flying:"Voador",
+  psychic:"Psíquico", bug:"Inseto", rock:"Pedra", ghost:"Fantasma", dragon:"Dragão",
+  dark:"Sombrio", steel:"Aço", fairy:"Fada",
+};
+const colorNames = ["", "preta", "azul", "marrom", "cinza", "verde", "rosa", "roxa", "vermelha", "branca", "amarela"];
+const stageNames = ["Não possui evolução.", "Está no estágio evolutivo inicial.",
+  "Está no estágio evolutivo intermediário.", "Está no estágio evolutivo final."];
+const measurement = value => (value / 10).toLocaleString("pt-BR");
+
+function pokemonClues(pokemon, generation, height, weight, color, stage) {
+  const types = info({pokemonId:pokemon.pokemonId}).types;
+  const wrongType = shuffle(Object.keys(typeNames).filter(type => !types.includes(type)))[0];
+  const wrongGeneration = generation % 9 + 1;
+  const wrongColor = shuffle(colorNames.slice(1).filter(name => name !== colorNames[color]))[0];
+  return {
+    hints: shuffle([
+      "Tipo: " + types.map(type => typeNames[type]).join(" e ") + ".",
+      "É da " + generation + "ª geração.",
+      "Mede " + measurement(height) + " m de altura.",
+      "Pesa " + measurement(weight) + " kg.",
+      "Sua cor principal é " + colorNames[color] + ".",
+      stageNames[stage],
+    ]).slice(0, 3),
+    falseHints: shuffle([
+      "Tem o tipo " + typeNames[wrongType] + ".",
+      "É da " + wrongGeneration + "ª geração.",
+      "Mede " + measurement(height + 7) + " m de altura.",
+      "Pesa " + measurement(weight + 17) + " kg.",
+      "Sua cor principal é " + wrongColor + ".",
+      stageNames[(stage + 1) % stageNames.length],
+    ]).slice(0, 4),
+  };
+}
+
+function clueButterfree(hints, falseHints) {
+  return shuffle([
+    ...hints.map(text => ({text, shiny:true})),
+    ...falseHints.map(text => ({text, shiny:false})),
+  ]).map((clue, id) => ({
+    ...clue, id, course:randomInt(4), phase:randomInt(0, 6400), speed:randomInt(4800, 8200),
+  }));
+}
+
 function newPairGame(room) {
   const players = room.practiceBot
     ? [room.players.find(p => p.id === room.practiceBot), room.players.find(p => p.id !== room.practiceBot)]
     : shuffle(room.players);
   const kind = room.minigame;
   const species = kind === "guess" ? new Map(silhouetteSpecies().map(p => [p.name, p])) : null;
-  const [answer, ...hints] = species ? clues[randomInt(clues.length)] : [];
+  const [answer, ...attributes] = species ? clueSpecies[randomInt(clueSpecies.length)] : [];
+  const pokemon = species?.get(answer);
+  const clues = pokemon ? pokemonClues(pokemon, ...attributes) : null;
   return {
     deadline: null, finished: false,
     teams: Array.from({length: players.length / 2}, (_, i) => ({
       guide:players[i * 2].id, actor:players[i * 2 + 1].id, status:"playing", messages:[],
       ...(kind === "wires" ? wirePuzzle() : {
-        answer, pokemon:species.get(answer), hints, caught:0, paper:randomInt(0x100000), lastGuessAt:null,
+        answer, pokemon, hints:clues.hints, butterflies:clueButterfree(clues.hints, clues.falseHints),
+        captured:[], lastGuessAt:null,
       }),
     })),
   };
@@ -113,12 +198,13 @@ function pairAction(room, player, action, data, now = Date.now()) {
   const guide = team.guide === player.id;
   if (!game.deadline || game.finished || now >= game.deadline || team.status !== "playing")
     throw Error("A tentativa da sua dupla terminou.");
-  if (action === "pairRelay" && guide) {
+  if (room.minigame === "guess" && action === "pairRelay" && guide) {
     const index = data.index;
-    const allowed = room.minigame === "wires" ? index === team.cuts.length :
+    const butterfly = team.butterflies?.find(clue => clue.id === index);
+    const allowed = team.butterflies ? butterfly && team.captured.includes(index) :
       Number.isInteger(index) && index >= 0 && index < team.caught;
     if (!allowed) throw Error("Essa instrução ainda não está disponível.");
-    const text = room.minigame === "wires" ? team.instructions[index].text : team.hints[index];
+    const text = butterfly?.text ?? team.hints[index];
     if (!team.messages.some(message => message.index === index)) team.messages.push({index, text});
   } else if (room.minigame === "wires" && action === "pairCut" && !guide) {
     if (data.index !== team.cuts.length || !team.wires.some(w => w.id === data.wire) || team.cuts.includes(data.wire))
@@ -133,9 +219,15 @@ function pairAction(room, player, action, data, now = Date.now()) {
     }
     if (game.teams.every(t => t.status !== "playing")) finish(room);
   } else if (room.minigame === "guess" && action === "pairCatch" && guide) {
-    if (data.paper !== team.paper || team.caught >= team.hints.length) throw Error("Esse papel já voou.");
-    team.caught++;
-    team.paper++;
+    if (team.butterflies) {
+      if (!team.butterflies.some(clue => clue.id === data.butterfly) || team.captured.includes(data.butterfly))
+        throw Error("Essa Butterfree já saiu de voo.");
+      team.captured.push(data.butterfly);
+    } else {
+      if (data.paper !== team.paper || team.caught >= team.hints.length) throw Error("Esse papel já voou.");
+      team.caught++;
+      team.paper++;
+    }
   } else if (room.minigame === "guess" && action === "pairGuess" && !guide) {
     if (typeof data.name !== "string" || !data.name.trim() || data.name.length > 60) throw Error("Digite um nome de Pokémon.");
     if (team.lastGuessAt != null && now - team.lastGuessAt < 350) throw Error("Aguarde um instante antes de tentar de novo.");
@@ -156,12 +248,17 @@ function pairView(room, player) {
     finished:game.finished, status:team.status, messages:team.messages,
     results:game.finished ? game.teams.map(({guide, actor, status}) => ({guide, actor, status})) : null };
   if (room.minigame === "wires") return {
-    ...base, progress:team.cuts.length, total:team.instructions.length,
+    ...base, messages:[], progress:team.cuts.length, total:team.instructions.length,
+    ...(room.practiceBot === team.guide && !guide && game.deadline && team.status === "playing"
+      ? { practiceSpeech:team.instructions[team.cuts.length].text } : {}),
     ...(guide ? { instructions:team.instructions.map(step => step.text) } : { wires:team.wires, cuts:team.cuts }),
   };
   return {
     ...base, lastGuessAt:team.lastGuessAt,
-    ...(guide ? { paper:team.paper, hints:team.hints.slice(0, team.caught), total:team.hints.length } : {}),
+    ...(guide ? team.butterflies ? {
+      butterflies:team.butterflies,
+      captured:team.captured,
+    } : {paper:team.paper, hints:team.hints.slice(0, team.caught), total:team.hints.length} : {}),
     ...(game.finished ? { pokemon:team.pokemon } : {}),
   };
 }
@@ -172,16 +269,19 @@ function practicePair(room, now = Date.now()) {
   const team = game.teams[0];
   if (team.status !== "playing") return false;
   const bot = room.players.find(p => p.id === room.practiceBot);
-  if (room.minigame === "wires") {
-    const index = team.cuts.length;
-    if (team.messages.some(message => message.index === index)) return false;
-    pairAction(room, bot, "pairRelay", {index}, now);
-  } else {
-    const index = team.caught;
-    if (index >= team.hints.length || now < game.deadline - 60000 + index * 3500) return false;
-    pairAction(room, bot, "pairCatch", {paper:team.paper}, now);
-    pairAction(room, bot, "pairRelay", {index}, now);
+  if (room.minigame !== "guess") return false;
+  if (team.butterflies) {
+    const index = team.captured.length;
+    const next = team.butterflies.find(clue => clue.shiny && !team.captured.includes(clue.id));
+    if (!next || now < game.deadline - 60000 + index * 3500) return false;
+    pairAction(room, bot, "pairCatch", {butterfly:next.id}, now);
+    pairAction(room, bot, "pairRelay", {index:next.id}, now);
+    return true;
   }
+  const index = team.caught;
+  if (index >= team.hints.length || now < game.deadline - 60000 + index * 3500) return false;
+  pairAction(room, bot, "pairCatch", {paper:team.paper}, now);
+  pairAction(room, bot, "pairRelay", {index}, now);
   return true;
 }
 
