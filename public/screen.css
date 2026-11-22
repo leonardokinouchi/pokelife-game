@@ -2354,6 +2354,7 @@ body:has(:is(#overlay,#personalOverlay).facility-full:not([hidden])) .system { v
 }
 #game:has(#minigameScreen:not([hidden])) :is(#dock,#map,#gameHead,#partyRail,#personalOverlay),
 body:has(#minigameScreen:not([hidden])) .system { visibility:hidden; }
+body:has(#minigameScreen[data-game="fog"]:not([hidden])) .system { z-index: 55; }
 body:has(#minigameScreen[data-game="fog"]:not([hidden])) #sound { visibility: visible; }
 
 #finalScoreboard {
