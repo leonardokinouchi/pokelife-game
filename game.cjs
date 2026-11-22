@@ -6,7 +6,7 @@ const { isPairMinigame, newPairGame, pairAction, pairView, practicePair } = requ
 const { arcadeGames, newArcade, beginArcade, arcadeAction, arcadeView } = require("./arcade.cjs");
 const { newAlphabet, beginAlphabet, answerAlphabet, alphabetView } = require("./alphabet.cjs");
 const minigames = ["market", "auction", "race", "million", "darkAuction", "pokemonQuiz", "wires", "guess", ...arcadeGames, "alphabet"];
-const archivedMinigames = new Set(["market", "elements", "claim"]);
+const archivedMinigames = new Set(["market", "elements", "claim", "million", "guess", "twentyOne"]);
 const isAuction = kind => kind === "auction" || kind === "darkAuction";
 const eligibleMinigames = (count, canAuction = true) => minigames.filter(kind =>
   !archivedMinigames.has(kind) && (!isPairMinigame(kind) || validPlayerCount(count)) &&
@@ -305,7 +305,7 @@ function newRoom(code, p) {
     mini: true,
     phase: "lobby",
     cards: [],
-    cardIndex: 0,
+    drawnMinigames: [],
     players: [p],
     gymLevels: rollGymLevels(),
     gymRoster: rollGyms(),
@@ -342,6 +342,8 @@ function moveLessonDetails(id) {
 }
 
 function view(r, p) {
+  const expedition = r.phase === "actions" || r.phase === "cards";
+  const roundCards = expedition ? roundCardView(r, p) : null;
   const other = (q) => ({
     id: q.id,
     name: q.name,
@@ -352,6 +354,8 @@ function view(r, p) {
     travel: q.travel,
     actions: q.actions,
     money: q.money,
+    job: q.job,
+    tradeBlocked: expedition ? tradeBlock(r, q) : null,
     party: q.party,
     box: q.box,
     boxCapacity: boxCapacity(q),
@@ -374,11 +378,9 @@ function view(r, p) {
     code: r.code,
     testLobby: !!r.testLobby,
     testOptions: r.testLobby && r.phase === "lobby" ? roomMinigames(r) : null,
-    cards: r.cards.slice(0, r.cardIndex + 1),
-    cardCount: r.cards.length,
-    activeCard: r.phase === "cards" ? r.cards[r.cardIndex].id : null,
+    roundCards,
     host: r.host,
-    phase: r.phase,
+    phase: roundCards ? "cards" : expedition ? "actions" : r.phase,
     round: r.round,
     rounds: r.rounds,
     mult: r.mult,
@@ -410,6 +412,7 @@ function view(r, p) {
     players: r.players.map(other),
     you: {
       ...rest,
+      tradeBlocked: expedition ? tradeBlock(r, p) : null,
       boxCapacity: boxCapacity(p),
       evolutionsByPokemon: Object.fromEntries([...new Map(
         [...p.party, ...p.box].map(mon => [mon.pokemonId, mon])).values()]
@@ -448,8 +451,12 @@ function view(r, p) {
         }])),
         leads: r.duelFormat.selected.mode === "doubles" ? 2 : 1,
         picked: duel.picks[p.id] || null,
+        draft: duel.drafts?.[p.id] || [],
         trainers: members.map((id, index) => ({
           id, ally: index % 2 === position % 2, ready: Object.hasOwn(duel.picks, id),
+          ...(index % 2 === position % 2 && id !== p.id ? {
+            selected: duel.picks[id] || duel.drafts?.[id] || [],
+          } : {}),
         })),
       } : null,
       battle: duel.battle?.view("p" + (position + 1)),
@@ -460,7 +467,8 @@ function view(r, p) {
     miniReady: r.phase === "minigame" ? r.miniReady : null,
     race: r.phase === "minigame" && r.minigame === "race" ? r.race : null,
     auction: r.phase === "minigame" && isAuction(r.minigame) ? auctionView(r) : null,
-    minigameOptions: r.phase === "minigame" ? r.minigameOptions ?? eligibleMinigames(r.players.length) : null,
+    minigameOptions: r.phase === "minigame"
+      ? (r.minigameOptions ?? roomMinigames(r)).filter(kind => !archivedMinigames.has(kind)) : null,
     pairGame: r.phase === "minigame" && isPairMinigame(r.minigame) ? pairView(r, p) : null,
     arcade: r.phase === "minigame" && arcadeGames.includes(r.minigame) ? arcadeView(r, p) : null,
     alphabet: r.phase === "minigame" && r.minigame === "alphabet" ? alphabetView(r.alphabet) : null,
@@ -475,9 +483,27 @@ function addCard(r, p, type, target) {
   });
 }
 
+function pendingCards(r) {
+  // Older saves record resolved cards as a prefix of the shared queue.
+  return r.cards.slice(r.cardIndex ?? 0).filter(card => !card.confirmed);
+}
+
+function roundCardView(r, p) {
+  const own = pendingCards(r).filter(card => card.owner === p.id);
+  const active = own[0];
+  if (!active) return null;
+  const total = r.cards.filter(card => card.owner === p.id).length;
+  return {
+    active: {id: active.id, type: active.type, name: active.name},
+    read: total - own.length,
+    total,
+  };
+}
+
 function beginRound(r, roll = randomInt) {
+  r.offers = r.offers.filter(offer => offer.round >= r.round - 1);
   r.cards = [];
-  r.cardIndex = 0;
+  delete r.cardIndex;
   for (const p of r.players) {
     p.actions = 10;
     if (r.round === 1) {
@@ -502,12 +528,10 @@ function beginRound(r, roll = randomInt) {
     p.walks = 0;
     p.battled = false;
   }
-  r.phase = r.cards.length ? "cards" : "actions";
+  r.phase = "actions";
 }
 
-function resolveCard(r, p, id) {
-  const card = r.cards[r.cardIndex];
-  check(card.owner === p.id && card.id === id, "Aguarde o destinatário da carta.");
+function resolveCard(p, card) {
   if (card.type === "fatigue") p.actions -= 2;
   if (card.type === "lazy") {
     const target = p.party.find((m) => m.uid === card.target);
@@ -524,10 +548,7 @@ function resolveCard(r, p, id) {
   }
   if (card.type === "quiet-camp") p.quietCamp = { first: null, complete: false };
   if (card.type === "dusk-expedition") p.duskExpedition = { complete: false };
-  if (++r.cardIndex === r.cards.length) {
-    r.phase = r.afterCards || "actions";
-    delete r.afterCards;
-  }
+  card.confirmed = true;
 }
 
 function next(r) {
@@ -535,7 +556,7 @@ function next(r) {
   for (const p of r.players) p.done = false;
   if (r.phase === "actions") {
     r.cards = [];
-    r.cardIndex = 0;
+    delete r.cardIndex;
     for (const p of r.players) {
       delete p.quietCamp;
       delete p.duskExpedition;
@@ -553,12 +574,7 @@ function next(r) {
         }
       }
     }
-    r.phase = r.round >= r.rounds ? "final" : "trocas";
-  }
-  else if (r.phase === "trocas") {
-    r.offers = [];
-    if (r.mini) startMinigame(r);
-    else pair(r);
+    closeExpedition(r);
   } else if (r.phase === "minigame") {
     if (r.practiceBot || r.testLobby) r.phase = "final";
     else pair(r);
@@ -573,10 +589,41 @@ function next(r) {
     beginRound(r);
   }
 }
+
+function closeExpedition(r) {
+  for (const offer of r.offers) {
+    offer.round ??= r.round;
+    if (pendingOffer(offer)) {
+      offer.status = "expired";
+      offer.reason = "A expedição da rodada terminou.";
+    }
+  }
+  if (r.round >= r.rounds) r.phase = "final";
+  else if (r.mini) startMinigame(r);
+  else pair(r);
+}
+
+function resumeLegacyTrades(r) {
+  if (!["trocas", "resumo"].includes(r.phase)) return false;
+  for (const p of r.players) p.done = false;
+  closeExpedition(r);
+  return true;
+}
+function skipArchivedMinigame(r) {
+  if (r.phase !== "minigame" || !archivedMinigames.has(r.minigame)) return false;
+  for (const trainer of r.players) trainer.done = true;
+  next(r);
+  return true;
+}
 function startMinigame(r, kind) {
-  const options = roomMinigames(r);
+  let options = roomMinigames(r);
   if (kind === undefined) {
+    // Older saves kept only the most recent minigame.
+    const drawn = r.drawnMinigames ??= r.minigame ? [r.minigame] : [];
+    options = options.filter(option => !drawn.includes(option));
+    if (!options.length) return pair(r);
     kind = options[randomInt(options.length)];
+    drawn.push(kind);
   }
   r.minigameOptions = options;
   r.phase = "minigame";
@@ -901,15 +948,22 @@ function pair(r) {
 function selectDuelTeam(r, duel, player, action, uids) {
   const members = duelMembers(duel);
   if (action === "duelEdit") {
+    if (duel.picks[player.id] && r.duelFormat.selected.mode === "multi")
+      (duel.drafts ??= {})[player.id] = duel.picks[player.id];
     delete duel.picks[player.id];
     return;
   }
-  check(action === "duelTeam" && !Object.hasOwn(duel.picks, player.id), "Confirme sua escalação.");
   const format = r.duelFormat.selected;
-  check(Array.isArray(uids) && uids.length === format.size &&
-    new Set(uids).size === format.size &&
+  const draft = action === "duelDraft" && format.mode === "multi";
+  check((draft || action === "duelTeam") && !Object.hasOwn(duel.picks, player.id), "Confirme sua escalação.");
+  check(Array.isArray(uids) && (draft ? uids.length <= format.size : uids.length === format.size) &&
+    new Set(uids).size === uids.length &&
     uids.every(uid => player.party.some(mon => mon.uid === uid)),
-  "Escolha " + format.size + " Pokémon diferentes da sua equipe.");
+  draft ? "Seleção de equipe inválida." : "Escolha " + format.size + " Pokémon diferentes da sua equipe.");
+  if (draft) {
+    (duel.drafts ??= {})[player.id] = [...uids];
+    return;
+  }
   const picks = { ...duel.picks, [player.id]: [...uids] };
   if (!members.every(id => Object.hasOwn(picks, id))) {
     duel.picks = picks;
@@ -923,6 +977,7 @@ function selectDuelTeam(r, duel, player, action, uids) {
   }));
   duel.battle = new BattleSession({ ...teams, mode:format.mode });
   delete duel.picks;
+  delete duel.drafts;
   for (const id of members) r.players.find(p => p.id === id).battled = true;
 }
 
@@ -1068,12 +1123,11 @@ function takeAction(r, p, k, d) {
     p.notice = "Transação concluída.";
   } else if (k === "explore") {
     check(p.loc.startsWith("biome"), "Escolha um bioma.");
-    const level = Math.max(
-      2,
-      Math.min(100, (p.party[0]?.level || 3) + randomInt(-2, 3)),
-    );
+    const leader = p.party[0];
+    const level = leader ? Math.max(2, Math.min(100, leader.level + randomInt(-2, 3))) : 5;
     const period = actionPeriod(p.actions);
-    const wild = rules.encounter(BIOMES[Number(p.loc.slice(5)) - 1], level, undefined, period);
+    const biome = BIOMES[Number(p.loc.slice(5)) - 1];
+    const wild = rules.encounter(biome, level, undefined, period, { fixedLevel: !leader });
     const team = p.party.filter((m) => m.hp > 0);
     p.enc = {
       type: "wild",
@@ -1185,6 +1239,14 @@ function transfer(p, q, a) {
   }
 }
 const pendingOffer = o => !o.status || o.status === "pending";
+const tradeActions = new Set(["offer", "counter", "accept", "decline", "cancel"]);
+function tradeBlock(r, p) {
+  if (pendingCards(r).some(card => card.owner === p.id)) return "lendo as cartas da rodada";
+  if (p.enc || p.eliteRun != null) return "em um encontro";
+  if (learningMon(p)) return "escolhendo um golpe";
+  return null;
+}
+
 function tradeSide(owner, value) {
   const list = Array.isArray(value) ? value : [value];
   check(list.length, "Inclua pelo menos um bem de cada lado.");
@@ -1220,11 +1282,11 @@ function negotiate(r, p, action, d) {
   const original = r.offers.find(o => o.id === d.id && pendingOffer(o));
   if (action === "offer" || action === "counter") {
     if (action === "counter") check(original?.to === p.id, "Contraproposta indisponível.");
-    const q = r.players.find(q => q.id === (action === "counter" ? original.from : d.to) && !q.done && q !== p);
+    const q = r.players.find(q => q.id === (action === "counter" ? original.from : d.to) && q !== p);
     check(q, "Jogador indisponível.");
     check(r.offers.filter(o => pendingOffer(o) && o.from === p.id).length < 12, "Limite de 12 ofertas pendentes.");
     const [give, want] = tradeTerms(p, q, d.give, d.want, true);
-    const proposal = {id:randomUUID(), from:p.id, to:q.id, give, want, status:"pending"};
+    const proposal = {id:randomUUID(), round:r.round, from:p.id, to:q.id, give, want, status:"pending"};
     if (original && action === "counter") {
       original.status = "countered";
       proposal.replaces = original.id;
@@ -1240,8 +1302,10 @@ function negotiate(r, p, action, d) {
   }
   check(action === "accept" && p.id === original.to, "Somente o destinatário pode aceitar.");
   const q = r.players.find(q => q.id === original.from);
-  check(!q.done, "O jogador encerrou as trocas.");
-  check(!learningMon(q), "O outro treinador está escolhendo um golpe.");
+  for (const trainer of [p, q]) {
+    const blocked = tradeBlock(r, trainer);
+    check(!blocked, trainer.name + " está " + blocked + ". Tente mais tarde.");
+  }
   let give, want;
   try {
     [give, want] = tradeTerms(q, p, original.give, original.want);
@@ -1310,12 +1374,7 @@ function execute(r, p, k, d = {}) {
     beginRound(r);
     return;
   }
-  if (phase === "cards") {
-    check(k === "card", "Aguarde a leitura das cartas.");
-    resolveCard(r, p, d.id);
-    return;
-  }
-  if (phase === "actions" || phase === "trocas") {
+  if (phase === "actions") {
     const learning = learningMon(p);
     if (k === "resolveMove") {
       check(learning && learning.uid === d.uid &&
@@ -1336,7 +1395,7 @@ function execute(r, p, k, d = {}) {
     check(
       !p.done &&
         !p.enc &&
-        ["actions", "trocas", "duelos"].includes(phase),
+        ["actions", "duelos"].includes(phase),
       "Ainda há uma etapa pendente.",
     );
     if (phase === "duelos")
@@ -1344,19 +1403,12 @@ function execute(r, p, k, d = {}) {
         duelFor(r, p)?.result,
         "Complete seu duelo.",
       );
-    if (phase === "trocas") {
-      for (const o of r.offers)
-        if (pendingOffer(o) && [o.from, o.to].includes(p.id)) {
-          o.status = "cancelled";
-          o.reason = "Um treinador encerrou as negociações.";
-        }
-    }
     p.shopVisit = null;
     p.done = true;
     next(r);
     return;
   }
-  if (k === "box" && (phase === "actions" || phase === "trocas")) {
+  if (k === "box" && phase === "actions") {
     check(!p.enc, "Termine o encontro.");
     const m = mon(p, d.uid),
       wasParty = p.party.includes(m);
@@ -1521,7 +1573,6 @@ function execute(r, p, k, d = {}) {
     takeAction(r, p, k, d);
     return;
   }
-  if (phase === "trocas") return negotiate(r, p, k, d);
   if (phase === "minigame") {
     if (r.miniReady && r.miniReady.length < r.players.length) {
       check(k === "miniReady", "Todos precisam confirmar o tutorial.");
@@ -1609,7 +1660,7 @@ function execute(r, p, k, d = {}) {
   if (phase === "duelos") {
     const t = duelFor(r, p);
     if (k === "duelForfeit") {
-      check(t && !t.result, "Duelo indisponível.");
+      check(t?.battle && !t.result, "Duelo indisponível.");
       const members = duelMembers(t);
       const side = members.indexOf(p.id) % 2;
       payout(r, t, members.filter((_, index) => index % 2 !== side)
@@ -1617,6 +1668,7 @@ function execute(r, p, k, d = {}) {
       return;
     }
     if (t?.picks && !t.battle && !t.result) {
+      if (k === "duelDraft") check(d.round === r.round, "A rodada mudou.");
       selectDuelTeam(r, t, p, k, d.uids);
       return;
     }
@@ -1640,6 +1692,22 @@ function execute(r, p, k, d = {}) {
   throw Error("Partida encerrada.");
 }
 function command(r, p, k, d = {}) {
+  if (r.phase === "actions" || r.phase === "cards") {
+    const card = pendingCards(r).find(card => card.owner === p.id);
+    if (k === "card") {
+      check(card && card.id === d.id, "Confirme apenas a sua carta atual.");
+      resolveCard(p, card);
+      r.phase = "actions";
+      return;
+    }
+    check(!card, "Confirme suas cartas para começar a expedição.");
+    // A saved room may still use the old shared card phase.
+    r.phase = "actions";
+  }
+  if (tradeActions.has(k)) {
+    check(r.phase === "actions", "As trocas estão disponíveis durante a expedição.");
+    return negotiate(r, p, k, d);
+  }
   const remaining = p.actions,
     phase = r.phase;
   const result = execute(r, p, k, d);
@@ -1669,4 +1737,4 @@ function command(r, p, k, d = {}) {
   }
   return result;
 }
-module.exports = { minigames, eligibleMinigames, eligibleDuelFormats, advancePractice, advanceRace, advanceAuction, startMinigame, beginRound, newRoom, player, view, command };
+module.exports = { minigames, eligibleMinigames, eligibleDuelFormats, advancePractice, advanceRace, advanceAuction, startMinigame, beginRound, resumeLegacyTrades, skipArchivedMinigame, newRoom, player, view, command };

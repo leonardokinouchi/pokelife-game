@@ -1,5 +1,4 @@
-let boxPage = 0,
-  selectedMon = "";
+let boxPage = 0;
 
 function openPokemonDetails(uid) {
   const mon = [...state.you.party, ...state.you.box].find(pokemon => pokemon.uid === uid);
@@ -90,43 +89,22 @@ function openPokemonDetails(uid) {
 function profile() {
   const p = state.you;
   const job = state.jobs[p.job];
-  const progress = p.jobProgress[p.job] || 0;
   const place = job?.place ? locName(p.jobLocation) :
     facilityNames[job?.facility] + " de " + locName(p.jobLocation);
-  return panel(
-    "Perfil de treinador",
-    '<div class="balance"><small>SALDO</small><strong>₽ ' +
-      p.money.toLocaleString("pt-BR") +
-      "</strong>" + trainerSprite(p.avatar, "trainer-preview") +
-      "<span>" + esc(p.name) + "</span><span>" +
-      (job ? esc(job.name + " · " + place) + " · " +
-        progress + " XP" : "Sem profissão") +
-      "</span></div><h3>Insígnias · " +
-      p.badges.length +
-      '/8</h3><div class="badgeCase">' +
-      [
-        "Folha",
-        "Maré",
-        "Faísca",
-        "Punho",
-        "Espectro",
-        "Geada",
-        "Brasa",
-        "Dragão",
-      ]
-        .map(
-          (n, i) =>
-            '<figure class="' +
-            (p.badges.includes(i + 1) ? "earned" : "locked") +
-            '"><img src="badges/' +
-            (i + 1) +
-            '.png" alt=""><figcaption>' +
-            n +
-            "</figcaption></figure>",
-        )
-        .join("") +
-      "</div>",
-  );
+  const badges = ["Folha", "Maré", "Faísca", "Punho", "Espectro", "Geada", "Brasa", "Dragão"];
+  return '<section class="personal-body"><div class="personal-identity">' +
+    trainerSprite(p.avatar, "trainer-preview") + '<h3>' + esc(p.name) + '</h3></div>' +
+    '<dl class="profile-facts"><div><dt>' + uiIcon("wallet") + ' Saldo</dt><dd>₽ ' +
+    p.money.toLocaleString("pt-BR") + '</dd></div><div><dt>Emprego</dt><dd>' +
+    (job ? esc(job.name) + '</dd><dd class="profile-job-place">' + esc(place) + ' · ' +
+      (p.jobProgress[p.job] || 0) + ' XP' : 'Sem emprego') + '</dd></div></dl>' +
+    '<div class="personal-section-head"><h3>Insígnias</h3><span>' + p.badges.length + ' / 8</span></div>' +
+    '<div class="badgeCase">' + badges.map((name, i) => {
+      const earned = p.badges.includes(i + 1);
+      return '<figure class="' + (earned ? "earned" : "locked") + '"><img src="badges/' + (i + 1) +
+        '.png" alt=""><figcaption>' + name + '<span class="sr-only">' +
+        (earned ? " (conquistada)" : " (bloqueada)") + '</span></figcaption></figure>';
+    }).join("") + '</div></section>';
 }
 function statusName(m) {
   return !m.hp
@@ -150,66 +128,40 @@ function tokenMon(m) {
     "</span>"
   );
 }
+const boxPageSize = 30;
+const boxPageCount = (trainer) => Math.max(1, Math.ceil(trainer.boxCapacity / boxPageSize));
+function boxPageMarkup(trainer, page, slot, action) {
+  const pages = boxPageCount(trainer);
+  const stored = new Map(trainer.box.map((mon) => [mon.boxSlot, mon]));
+  const button = (delta, label, disabled) => '<button type="button" ' +
+    (action ? 'data-action="' + action + '" data-args="' + esc(JSON.stringify({delta})) + '"' :
+      'data-page="' + delta + '"') + (disabled ? ' disabled' : '') + '>' + label + '</button>';
+  const slots = Array.from({length:boxPageSize}, (_, index) => {
+    const position = page * boxPageSize + index;
+    return slot(position, stored.get(position));
+  });
+  return '<div class="pcNav">' + button(-1, '‹ <span>Anterior</span>', page === 0) +
+    '<b aria-live="polite">Box ' + (page + 1) + ' / ' + pages + '</b>' +
+    button(1, '<span>Próxima</span> ›', page >= pages - 1) +
+    '</div><div class="pcGrid">' + slots.join("") + '</div>';
+}
+function boxSlotContents(mon) {
+  return mon ? tokenMon(mon) + '<small>' + esc(mon.name) + '</small>' : uiIcon("ball");
+}
 function boxScreen() {
-  const p = state.you,
-    stored = new Map(p.box.map((m) => [m.boxSlot, m]));
-  const pages = p.boxCapacity / 30;
-  boxPage = Math.min(boxPage, pages - 1);
-  function slot(team, n, m) {
-    return (
-      '<button class="pcSlot" data-team="' +
-      team +
-      '" data-slot="' +
-      n +
-      '" ' +
-      (m
-        ? 'draggable="true" data-mon="' +
-          m.uid +
-          '" title="' +
-          esc(m.name) +
-          '"'
-        : 'aria-label="Espaço vazio"') +
-      ">" +
-      (m ? tokenMon(m) + "<small>" + esc(m.name) + "</small>" : "·") +
-      "</button>"
-    );
+  const p = state.you;
+  boxPage = Math.min(boxPage, boxPageCount(p) - 1);
+  const canDrag = state.phase === "actions" && !p.enc && !p.moveLesson;
+  function slot(n, m) {
+    return '<button type="button" class="pcSlot" data-team="box" data-slot="' + n + '" ' +
+      (m ? 'data-mon="' + esc(m.uid) + '" data-pokemon-details="' + esc(m.uid) + '" title="' +
+        esc(m.name) + '"' + (canDrag ? ' draggable="true"' : "") : 'aria-label="Espaço vazio"') +
+      '>' + boxSlotContents(m) + '</button>';
   }
-  const m = [...p.party, ...p.box].find((m) => m.uid === selectedMon),
-    first = Array.from({ length: 30 }, (_, i) => boxPage * 30 + i).find(
-      (i) => !stored.has(i),
-    );
-  return panel(
-    "Armazenamento Pokémon",
-    '<div class="pcNav"><button data-page="-1" ' +
-      (!boxPage ? "disabled" : "") +
-      ">Anterior</button><b>Box " +
-      (boxPage + 1) +
-      ' / ' + pages + '</b><button data-page="1" ' +
-      (boxPage === pages - 1 ? "disabled" : "") +
-      '>Próxima</button></div><div class="pcGrid">' +
-      Array.from({ length: 30 }, (_, i) =>
-        slot("box", boxPage * 30 + i, stored.get(boxPage * 30 + i)),
-      ).join("") +
-      '</div><h3>Equipe</h3><div class="pcGrid">' +
-      Array.from({ length: 6 }, (_, i) => slot("party", i, p.party[i])).join(
-        "",
-      ) +
-      "</div>" +
-      (m
-        ? '<div class="pcMenu"><b>' +
-          esc(m.name) +
-          " · Nv. " +
-          m.level +
-          "</b>" +
-          bars(m) +
-          ((p.party.includes(m) ? p.box.length < p.boxCapacity : p.party.length < 6) ? btn(
-            p.party.includes(m) ? "Guardar na box" : "Colocar na equipe",
-            "box",
-            { uid: m.uid, slot: p.party.includes(m) ? first : undefined },
-          ) : "<small>Sem espaço livre. Arraste sobre um Pokémon para trocar.</small>") +
-          "<button data-clear-mon>Fechar opções</button></div>"
-        : ""),
-  );
+  return '<section class="box-group">' +
+    '<div class="personal-section-head"><h3>Armazenamento</h3><span>' + p.box.length +
+    ' / ' + p.boxCapacity + '</span></div>' +
+    boxPageMarkup(p, boxPage, slot) + '</section>';
 }
 function itemArt(id) {
   const available = state.shop[id]?.sprite || id === "master-ball";
@@ -264,14 +216,6 @@ function gymHint() {
         "</span>"
     : "";
 }
-document.addEventListener("contextmenu", (e) => {
-  const c = e.target.closest(".pcSlot[data-mon]");
-  if (c) {
-    e.preventDefault();
-    selectedMon = c.dataset.mon;
-    render();
-  }
-});
 document.addEventListener("click", (e) => {
   const b = e.target.closest("button");
   if (!b) return;
@@ -280,13 +224,8 @@ document.addEventListener("click", (e) => {
     return;
   }
   if (b.dataset.page) {
-    boxPage = Math.max(0, Math.min(state.you.boxCapacity / 30 - 1, boxPage + Number(b.dataset.page)));
-    selectedMon = "";
+    boxPage = Math.max(0, Math.min(boxPageCount(state.you) - 1, boxPage + Number(b.dataset.page)));
     render();
-  } else if (b.hasAttribute("data-clear-mon") || b.matches(".pcSlot")) {
-    selectedMon = b.dataset.mon || "";
-    render();
-    if (selectedMon) openPokemonDetails(selectedMon);
   }
 });
 const pokemonDragType = "application/x-aurora-pokemon";

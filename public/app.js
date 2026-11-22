@@ -31,7 +31,6 @@ const phases = {
   actions: "Expedição",
   cards: "Cartas da rodada",
 
-  trocas: "Encontro dos treinadores",
   minigame: "Minigame",
   duelos: "Duelos de treinadores",
   final: "Classificação final",
@@ -251,25 +250,18 @@ const cardArt = {
   "quiet-camp": ["Acampamento tranquilo", "floresta-pixel.png", "moon"],
   "dusk-expedition": ["Expedição ao entardecer", "lago-pixel.png", "compass"],
 };
-const readCards = new Set(JSON.parse(sessionStorage.getItem("auroraReadCards") || "[]"));
-let displayedCard = "", cardSince = 0, cardTimer;
 function renderCard(s) {
   const dialog = $("roundCard");
-  clearTimeout(cardTimer);
   if ($("evolutionScene").open) return;
-  const card = (s.cards || []).find(c => !readCards.has(c.id));
+  const card = s.roundCards?.active;
   if (!card) {
     if (dialog.open) dialog.close();
-    displayedCard = "";
+    delete dialog.dataset.card;
     renderEvolution(s);
     return;
   }
-  const owner = s.players.find(p => p.id === card.owner);
-  const mine = owner.id === s.you.id;
-  const current = card.id === s.activeCard;
-  if (displayedCard !== card.id) {
-    displayedCard = card.id;
-    cardSince = Date.now();
+  if (dialog.dataset.card !== card.id) {
+    dialog.dataset.card = card.id;
     const [title, art, icon] = cardArt[card.type];
     const text = {
       tutorial: "Vá ao posto de trabalho, escolha uma vaga e trabalhe no local indicado. Com seu primeiro salário, compre Poké Bolas e explore um bioma para tentar sua primeira captura.",
@@ -282,28 +274,21 @@ function renderCard(s) {
       "dusk-expedition": "Comece uma exploração com 4 ou 5 ações restantes e conclua o encontro nesta rodada para ganhar 1 Poké Bola.",
     };
     dialog.innerHTML = '<div class="card-art" style="background-image:url(scenes/' + art +
-      ')"><span class="card-round">Rodada ' + s.round + ' · Cartas ' + (s.cards.indexOf(card) + 1) + '/' + s.cardCount + '</span></div><div class="card-copy"><span class="card-seal">' +
-      uiIcon(icon) + '</span><small>' + esc(owner.name) + '</small><h2 id="cardTitle">' + title +
+      ')"><span class="card-round">Rodada ' + s.round + ' · Carta ' + (s.roundCards.read + 1) + ' de ' +
+      s.roundCards.total + '</span></div><div class="card-copy"><span class="card-seal">' +
+      uiIcon(icon) + '</span><small>' + esc(s.you.name) + '</small><h2 id="cardTitle">' + title +
       '</h2><p>' + esc(text[card.type]) + '</p>' +
-      (mine && current ? btn("Continuar", "card", {id:card.id}, "primary") :
-        '<span class="card-wait">Leitura de ' + esc(owner.name) + '</span>') + '</div>';
-    if (!dialog.open) dialog.showModal();
+      btn("Continuar", "card", {id:card.id}, "primary") + '</div>';
+    if (dialog.open) dialog.querySelector("button").focus();
   }
-  if (!current) {
-    const delay = mine ? 0 : Math.max(0, 2200 - (Date.now() - cardSince));
-    cardTimer = setTimeout(() => {
-      readCards.add(card.id);
-      sessionStorage.setItem("auroraReadCards", JSON.stringify([...readCards].slice(-128)));
-      renderCard(state);
-    }, delay);
-  }
+  if (!dialog.open) dialog.showModal();
 }
 $("roundCard").oncancel = event => event.preventDefault();
 $("roundCard").onclick = event => {
-  if (event.target.closest("button") || displayedCard !== state?.activeCard) return;
-  const card = state.cards.find(c => c.id === displayedCard);
+  const card = state?.roundCards?.active;
+  if (event.target.closest("button") || !card || $("roundCard").dataset.card !== card.id) return;
   const bounds = $("roundCard").getBoundingClientRect();
-  if (card?.owner === state.you.id && event.clientX >= bounds.left &&
+  if (event.clientX >= bounds.left &&
       event.clientX <= bounds.right && event.clientY >= bounds.top && event.clientY <= bounds.bottom)
     act("card", { id: card.id });
 };
@@ -360,6 +345,12 @@ function setState(s, afterPlayback = false) {
       "Rodada " + s.round + " · " + (phases[s.phase] || "Expedição"),
       1500,
     );
+  const previous = state;
+  if (previous?.code === s.code && previous.you.id === s.you.id) {
+    const resolved = s.offers.find(offer => offer.from === s.you.id && !isPendingTrade(offer) &&
+      previous.offers.some(old => old.id === offer.id && isPendingTrade(old)));
+    if (resolved) toast("Proposta " + tradeLabels[resolved.status].toLocaleLowerCase("pt-BR") + ".");
+  }
   state = s;
   const signature = JSON.stringify(s);
   if (signature !== last) {
@@ -373,7 +364,7 @@ function setState(s, afterPlayback = false) {
 function renderMoveLesson(s) {
   const dialog = $("moveLesson");
   const lesson = s.you.moveLesson;
-  if (!lesson || !["actions", "trocas"].includes(s.phase) || document.querySelector(".ending") ||
+  if (!lesson || s.phase !== "actions" || document.querySelector(".ending") ||
       $("roundCard").open || $("evolutionScene").open) {
     if (dialog.open) dialog.close();
     return;
@@ -472,20 +463,22 @@ async function act(action, data = {}) {
       if (tradePartner === data.to) {
         tradeDraft = {give:[], want:[]};
         tradeCounter = tradeConfirm = "";
-        tradeTab = "sent";
-        tradeMobile = "inbox";
       }
+      tradeScreen = "";
       toast(action === "counter" ? "Contraproposta enviada." : "Oferta enviada.");
     }
     if (out.tradeNotice) {
       tradeConfirm = "";
       tradeTab = "history";
+      if (out.tradeNotice === "Troca concluída.") tradeScreen = "";
       toast(out.tradeNotice);
     }
     setState(out.state);
 
   } catch (e) {
-    toast(e.message);
+    if ($("tradeDialog").open) {
+      $("tradeFeedback").textContent = e.message;
+    } else toast(e.message);
   } finally {
     busy = false;
   }
@@ -675,57 +668,31 @@ function itemUseForm(p, id) {
     '</label>' + btn("Aplicar", "useItem", { form: id }) + '</details>';
 }
 
-function inventory() {
-  const p = state.you,
-    can = state.phase === "actions" && !p.done && !p.enc;
-  const mons = (list, box) =>
-    list
-      .map(
-        (m) =>
-          showMon(m, true) +
-          (can
-            ? '<div class="buttons">' +
-              btn(box ? "Mover à equipe" : "Mover à box", "box", {
-                uid: m.uid,
-              }) +
-              (!box && p.party[0] !== m
-                ? btn("Liderar equipe", "lead", { uid: m.uid })
-                : "") +
-              (p.actions
-                ? btn("Acariciar · 1 ação · " + actionsRemaining(p), "pet", { uid: m.uid })
-                : "") +
-              "</div>"
-            : ""),
-      )
-      .join("");
-  return (
-    panel(
-      "Equipe · " + p.party.length + "/6",
-      mons(p.party, false) ||
-        "<p>Você começa sem Pokémon. Trabalhe, compre uma Poké Bola e explore um bioma.</p>",
-    ) +
-    panel(
-      "Box Pokémon · " + p.box.length,
-      '<details id="boxDetails"><summary>Abrir box</summary>' +
-        (mons(p.box, true) || "Nenhum Pokémon na box.") +
-        "</details>",
-    ) +
-    panel(
-      "Mochila",
-      (Object.entries(p.items)
-        .filter(([, n]) => n > 0)
-        .map(
-          ([id, n]) =>
-            '<div class="row roster" tabindex="0" data-item-summary="' + esc(id) + '">' +
-            itemArt(id) +
-            esc(state.shop[id]?.name || id) +
-            " <b>× " +
-            n +
-            "</b></div>",
-        )
-        .join("") || "A mochila está vazia.") + itemUseForm(p, "bagUse"),
-    )
-  );
+function teamPanel() {
+  const p = state.you;
+  const canManage = state.phase === "actions" && !p.done && !p.enc;
+  return panel("Equipe · " + p.party.length + "/6", p.party.map(m =>
+    showMon(m, true) + (canManage ? '<div class="buttons">' +
+      btn("Mover à box", "box", {uid:m.uid}) +
+      (p.party[0] !== m ? btn("Liderar equipe", "lead", {uid:m.uid}) : "") +
+      (p.actions ? btn("Acariciar · 1 ação · " + actionsRemaining(p), "pet", {uid:m.uid}) : "") +
+      "</div>" : "")).join("") ||
+    "<p>Você começa sem Pokémon. Trabalhe, compre uma Poké Bola e explore um bioma.</p>");
+}
+
+function bagPanel() {
+  const p = state.you;
+  const items = Object.entries(p.items).filter(([, quantity]) => quantity > 0);
+  const cards = items.map(([id, quantity]) =>
+    '<li class="bag-item" tabindex="0" data-item-summary="' + esc(id) + '">' +
+    '<span class="bag-item-art">' + itemArt(id) + '</span><strong>' +
+    esc(state.shop[id]?.name || id) + '</strong><span class="bag-quantity">× ' +
+    quantity + '</span></li>').join("");
+  return '<section class="personal-body"><div class="personal-section-head"><h3>Itens guardados</h3>' +
+    '<span>' + items.length + (items.length === 1 ? ' tipo' : ' tipos') + '</span></div>' +
+    (items.length ? '<ul class="bag-grid">' + cards + '</ul>' :
+      '<p class="personal-empty">' + uiIcon("backpack") + 'Sua mochila está vazia.</p>') +
+    itemUseForm(p, "bagUse") + '</section>';
 }
 function battleUI(b) {
   return (
@@ -818,9 +785,11 @@ function roster(q) {
 }
 const tradeLabels = {
   pending:"Pendente", accepted:"Concluída", declined:"Recusada",
-  cancelled:"Cancelada", countered:"Substituída", invalid:"Inválida",
+  cancelled:"Cancelada", countered:"Substituída", invalid:"Inválida", expired:"Expirada",
 };
-let tradeRound = 0, tradePartner = "", tradeTab = "received", tradeMobile = "table";
+let tradeContext = "", tradePartner = "", tradeTab = "received", tradeScreen = "";
+let tradeAlertSignature = "";
+const dismissedTradeAlerts = new Set();
 let tradeDraft = {give:[], want:[]}, tradeCounter = "", tradeConfirm = "";
 const tradeList = value => Array.isArray(value) ? value : [value];
 const isPendingTrade = offer => !offer.status || offer.status === "pending";
@@ -842,7 +811,8 @@ function tradeAssetTitle(a) {
 function tradeAssetCard(a, side) {
   const pokemon = a.pokemon;
   const remove = side ? btn("Remover", "tradeRemove", {side, key:tradeKey(a)}) : "";
-  if (a.kind !== "mon") return '<li class="exchange-asset"><strong>' + esc(tradeAssetTitle(a)) +
+  if (a.kind !== "mon") return '<li class="exchange-asset">' +
+    (a.kind === "item" ? itemArt(a.id) : "") + '<strong>' + esc(tradeAssetTitle(a)) +
     '</strong><span>' + (a.kind === "money" ? "₽ " : "× ") + esc(a.qty) + '</span>' + remove + '</li>';
   const detail = pokemon ? '<details><summary>' + esc(pokemon.name) + '</summary><small>Nível ' +
     esc(pokemon.level) + (pokemon.types?.length ? ' · ' + esc(pokemon.types.join(" / ")) : '') +
@@ -888,12 +858,14 @@ function tradeOfferCard(o) {
   const give = incoming ? o.want : o.give, want = incoming ? o.give : o.want;
   const q = state.players.find(q => q.id === (incoming ? o.from : o.to));
   let actions = "";
-  if (isPendingTrade(o) && !p.done) {
+  if (isPendingTrade(o)) {
     actions = incoming ? btn("Revisar e aceitar", "tradeReview", {id:o.id}, "primary") +
       btn("Contraproposta", "tradeCounter", {id:o.id}) + btn("Recusar", "decline", {id:o.id}) :
       btn("Cancelar oferta", "cancel", {id:o.id});
   }
-  return '<article class="exchange-offer"><header><strong>' + esc(q.name) + '</strong><span>' +
+  const blocked = p.tradeBlocked ? "Você está " + p.tradeBlocked + "." :
+    q.tradeBlocked ? q.name + " está " + q.tradeBlocked + "." : "";
+  return '<article class="exchange-offer" id="trade-offer-' + esc(o.id) + '"><header><strong>' + esc(q.name) + '</strong><span>' +
     tradeLabels[o.status || "pending"] + '</span></header>' +
     '<div class="exchange-terms"><section><h4>Você entrega</h4>' + tradeAssetsView(give, p) +
     '</section><section><h4>Você recebe</h4>' + tradeAssetsView(want, q) + '</section></div>' +
@@ -901,175 +873,212 @@ function tradeOfferCard(o) {
     (tradeConfirm === o.id && isPendingTrade(o) ?
       '<div class="exchange-review"><strong>Saldo após a troca: ₽ ' + (p.money - tradeCoins(give) + tradeCoins(want)) +
       '</strong>' + tradeWarning(give, want) + '<div class="exchange-buttons">' +
-      btn("Confirmar troca", "accept", {id:o.id}, "primary") + btn("Voltar", "tradeBack") + '</div></div>' :
+      (blocked ? '<span role="status">' + esc(blocked) + '</span>' :
+        btn("Aceitar troca", "accept", {id:o.id}, "primary")) +
+      btn("Recusar", "decline", {id:o.id}) + btn("Voltar", "tradeBack") + '</div></div>' :
       '<div class="exchange-buttons">' + actions + '</div>') + '</article>';
 }
 const tradeDrafts = new Map();
-let tradeProfileTab = "party", tradeOwnProfile = false;
-let tradeSearch = "", tradeType = "", tradeShiny = false, tradePage = 0;
+let tradeProfileTab = "party";
+let tradePage = 0;
 function selectTradePartner(id) {
   if (id === tradePartner) return;
-  tradeDrafts.set(tradePartner, {draft:tradeDraft, counter:tradeCounter});
+  if (tradePartner) tradeDrafts.set(tradePartner, {draft:tradeDraft, counter:tradeCounter});
   tradePartner = id;
   const saved = tradeDrafts.get(id);
   tradeDraft = saved?.draft || {give:[], want:[]};
   tradeCounter = saved?.counter || "";
   tradeConfirm = "";
   tradeTab = "received";
+  tradeProfileTab = "party";
   tradePage = 0;
 }
-function tradeProfile(partner) {
-  const p = state.you;
-  const q = tradeOwnProfile ? p : partner;
-  if (!q) return "";
-  const side = tradeOwnProfile ? "give" : "want";
-  const canTrade = partner && !partner.done && !p.done;
-  const add = (key, label) => canTrade ? btn(label, "tradePick", {key, side}) : "";
-  const monCard = (m, inParty) => '<article class="exchange-profile-mon"><ul class="exchange-assets">' +
-    tradeAssetCard({kind:"mon", id:m.uid, pokemon:m, inParty}) + '</ul>' +
-    bars(m) + add("mon:" + m.uid, tradeOwnProfile ? "Adicionar à oferta" : "Pedir na troca") +
-    '</article>';
-  let content = "";
-  if (tradeProfileTab === "party") {
-    content = '<div class="exchange-profile-team">' + Array.from({length:6}, (_, index) =>
-      q.party[index] ? monCard(q.party[index], true) :
-        '<div class="exchange-profile-mon exchange-empty-slot">Vaga livre</div>').join("") + '</div>';
-  } else if (tradeProfileTab === "box") {
-    const types = [...new Set(q.box.flatMap(m => m.types || []))].sort();
-    const matches = q.box.filter(m => m.name.toLocaleLowerCase("pt-BR").includes(tradeSearch) &&
-      (!tradeType || m.types?.includes(tradeType)) && (!tradeShiny || m.shiny));
-    const pageSize = 24;
-    tradePage = Math.min(tradePage, Math.max(0, Math.ceil(matches.length / pageSize) - 1));
-    content = '<div class="exchange-profile-filters"><label>Buscar Pokémon<input id="tradeSearch" type="search" value="' +
-      esc(tradeSearch) + '"></label><label>Tipo<select id="tradeType">' +
-      opt("", "Todos") + types.map(type => opt(type,type)).join("") +
-      '</select></label><label><input id="tradeShiny" type="checkbox"' + (tradeShiny ? ' checked' : '') +
-      '> Só shiny</label></div>' +
-      '<p>' + matches.length + ' de ' + q.box.length + ' Pokémon</p><div class="exchange-profile-team">' +
-      matches.slice(tradePage * pageSize, (tradePage + 1) * pageSize).map(m => monCard(m, false)).join("") +
-      '</div>' + (tradePage ? btn("Anterior", "tradePage", {delta:-1}) : "") +
-      ((tradePage + 1) * pageSize < matches.length ? btn("Próxima", "tradePage", {delta:1}) : "");
-  } else {
-    const goods = tradeInventory(q).filter(a => a.kind !== "mon");
-    content = goods.length ? '<ul class="exchange-profile-items">' + goods.map(a => {
-      const item = state.shop[a.id];
-      return '<li>' + (item ? itemArt(a.id) : "") + '<div><strong>' + esc(tradeAssetTitle(a)) +
-        '</strong><small>' + (item ? "× " + a.qty : "₽ " + a.qty) +
-        (item?.price ? " · Loja ₽ " + item.price : "") + '</small></div>' +
-        add(tradeKey(a), tradeOwnProfile ? "Adicionar à oferta" : "Pedir na troca") + '</li>';
-    }).join("") + '</ul>' : '<p class="exchange-empty">Mochila vazia.</p>';
-  }
-  const tabs = [["party","Equipe"], ["box","Box"], ["bag","Mochila"]].map(([id,label]) =>
-    '<button data-action="tradeProfileTab" data-args=\'' + JSON.stringify({id}) +
-    '\' aria-pressed="' + (id === tradeProfileTab) + '">' + label + '</button>').join("");
-  return '<section class="exchange-profile"><div class="exchange-profile-heading">' +
-    trainerSprite(q.avatar, "trainer-preview") + '<div><h3>' + esc(q.name) + '</h3><small>₽ ' +
-    q.money.toLocaleString("pt-BR") + ' · ' + q.badges.length + '/8 insígnias · ' +
-    (q.registered ?? q.dex?.length ?? 0) + ' espécies · ' + (q.shinyCaught ?? 0) + ' shiny</small></div></div>' +
-    '<div class="exchange-tabs">' + btn(tradeOwnProfile ? "Ver parceiro" : "Minha ficha", "tradeOwnProfile") +
-    (tradeOwnProfile ? '<button data-drawer="box">Abrir minha Box</button>' : '') + '</div>' +
-    '<div class="exchange-tabs">' + tabs + '</div>' + content + '</section>';
+function trainerPokemonSlot(position, mon) {
+  const description = 'Espaço ' + (position + 1) + (mon
+    ? ': ' + mon.name + ' · Nv. ' + mon.level + (mon.shiny ? ' · Shiny' : '') : ' vazio');
+  return '<div class="trainer-slot' + (mon ? ' trainer-slot-occupied' : '') + '" role="img" aria-label="' +
+    esc(description) + '" title="' + esc(description) + '">' + boxSlotContents(mon) + '</div>';
 }
 
-function trade() {
-  const p = state.you, offers = state.offers;
-  if (tradeRound !== state.round || !state.players.some(q => q.id === tradePartner)) {
-    tradeRound = state.round;
-    tradeDrafts.clear();
-    tradeOwnProfile = false;
-    tradeProfileTab = "party";
-    tradeSearch = tradeType = "";
-    tradeShiny = false;
-    tradePage = 0;
-    tradePartner = state.players.find(q => q.id !== p.id)?.id || "";
-    tradeDraft = {give:[], want:[]};
-    tradeCounter = tradeConfirm = "";
-    tradeTab = "received";
-    tradeMobile = "profile";
+function tradeProfile(q) {
+  let content;
+  if (tradeProfileTab === "party") {
+    content = '<div class="pcGrid trainer-team">' + Array.from({length:6}, (_, index) =>
+      trainerPokemonSlot(index, q.party[index])).join("") + '</div>';
+  } else if (tradeProfileTab === "box") {
+    tradePage = Math.min(tradePage, boxPageCount(q) - 1);
+    content = boxPageMarkup(q, tradePage, trainerPokemonSlot, "tradePage");
+  } else {
+    const goods = Object.entries(q.items).filter(([, quantity]) => quantity > 0);
+    content = goods.length ? '<ul class="trainer-items">' + goods.map(([id, quantity]) =>
+      '<li>' + itemArt(id) + '<strong>' + esc(state.shop[id]?.name || id) +
+      '</strong><span>× ' + quantity + '</span></li>').join("") + '</ul>' :
+      '<p class="exchange-empty">Mochila vazia.</p>';
   }
-  const others = state.players.filter(q => q.id !== p.id);
-  const partner = others.find(q => q.id === tradePartner);
-  const pending = offers.filter(isPendingTrade);
-  const scoped = offers.filter(o => [o.from, o.to].includes(tradePartner));
-  const groups = {
-    received:scoped.filter(o => isPendingTrade(o) && o.to === p.id),
-    sent:scoped.filter(o => isPendingTrade(o) && o.from === p.id),
-    history:scoped.filter(o => !isPendingTrade(o)).reverse(),
-  };
-  const people = others.map(q => {
-    const count = pending.filter(o => o.from === q.id && o.to === p.id).length;
-    return '<button class="exchange-person" data-action="tradePartner" data-args=\'' +
-      esc(JSON.stringify({id:q.id})) + '\' aria-pressed="' + (q.id === tradePartner) + '">' +
-      trainerSprite(q.avatar, "trainer-preview") + '<span><strong>' + esc(q.name) +
-      '</strong><small>' + (q.done ? 'Concluiu' : 'Negociando') + ' · ₽ ' + q.money.toLocaleString('pt-BR') +
-      ' · ' + q.badges.length + '/8 insígnias</small></span>' +
-      (count ? '<b aria-label="' + count + ' ofertas recebidas">' + count + '</b>' : '') + '</button>';
-  }).join("");
-  let table = '<p class="exchange-empty">Selecione um treinador disponível.</p>';
-  if (p.done) table = '<p class="exchange-empty">Aguardando os outros treinadores.</p>';
-  else if (partner?.done) table = '<p class="exchange-empty">Este treinador encerrou as negociações.</p>';
-  else if (partner) table = '<header><h3>' + (tradeCounter ? 'Contraproposta para ' : 'Negociar com ') +
-    esc(partner.name) + '</h3><span>Saldo · ₽ ' + p.money + '</span></header>' +
-    '<div class="exchange-terms">' + tradeEditor("give", "Você entrega", p) +
-    tradeEditor("want", "Você recebe", partner) + '</div>' +
-    tradeWarning(tradeDraft.give, tradeDraft.want) +
-    '<div class="exchange-buttons"><button class="primary" data-action="tradeSend"' +
-    (!tradeDraft.give.length || !tradeDraft.want.length ? ' disabled' : '') + '>' +
-    (tradeCounter ? 'Enviar contraproposta' : 'Enviar oferta') + '</button>' +
-    (tradeCounter ? btn("Descartar rascunho", "tradeDiscard") : '') + '</div>';
-  const tabs = [["received","Recebidas"], ["sent","Enviadas"], ["history","Histórico"]]
-    .map(([id,name]) => '<button data-action="tradeTab" data-args=\'' + JSON.stringify({id}) +
-      '\' aria-pressed="' + (tradeTab === id) + '">' + name + ' · ' + groups[id].length + '</button>').join("");
-  return '<section class="exchange" data-mobile="' + tradeMobile + '"><header><h2>Encontro dos treinadores</h2></header>' +
-    '<div class="exchange-layout"><aside class="exchange-people"><h3>Treinadores</h3>' + people + '</aside>' +
-    '<div class="exchange-mobile" aria-label="Seções do encontro">' + btn("Ficha", "tradeMobile", {id:"profile"}) + btn("Proposta", "tradeMobile", {id:"table"}) +
-    btn("Ofertas (" + pending.filter(o => o.to === p.id).length + ")", "tradeMobile", {id:"inbox"}) + '</div>' +
-    tradeProfile(partner) + '<section class="exchange-table">' + table + '</section><aside class="exchange-inbox"><h3>Ofertas</h3>' +
-    '<div class="exchange-tabs">' + tabs + '</div>' + (groups[tradeTab].length ?
-      groups[tradeTab].map(tradeOfferCard).join("") : '<p class="exchange-empty">Nenhuma oferta nesta aba.</p>') +
-    '</aside></div><footer>' + (p.done ? 'Você concluiu o encontro.' : tradeConfirm === "finish" ?
-      '<p>' + pending.length + ' oferta(s) pendente(s) serão canceladas. Concluir encontro?</p>' +
-      btn("Confirmar conclusão", "finish", {}, "primary") + btn("Voltar", "tradeBack") :
-      btn("Concluir encontro", "tradeFinish")) + '</footer></section>';
+  const tabs = [
+    ["party", "Equipe", q.party.length + "/6"],
+    ["box", "Box", q.box.length],
+    ["bag", "Mochila", Object.values(q.items).filter(quantity => quantity > 0).length],
+  ].map(([id, label, count]) =>
+    '<button type="button" id="trainer-tab-' + id + '" data-action="tradeProfileTab" data-args="' +
+    esc(JSON.stringify({id})) + '" aria-pressed="' + (id === tradeProfileTab) +
+    '">' + label + ' <span>' + count + '</span></button>').join("");
+  const badgeTitles = q.badges.map(rank => state.gyms[rank - 1]?.name || rank).join(", ");
+  return '<section class="trainer-profile"><div class="trainer-identity">' +
+    trainerSprite(q.avatar, "trainer-preview") + '<div><h3>' + esc(q.name) + '</h3><p>' +
+    esc(state.jobs[q.job]?.name || "Sem emprego") + '</p></div></div>' +
+    '<dl class="trainer-facts"><div><dt>Saldo</dt><dd>₽ ' + q.money.toLocaleString("pt-BR") +
+    '</dd></div><div><dt>Insígnias</dt><dd>' + q.badges.length + ' / 8</dd></div></dl>' +
+    (q.badges.length ? '<p class="trainer-badges">' + esc(badgeTitles) + '</p>' : '') +
+    '<div class="exchange-tabs trainer-tabs" aria-label="Dados do treinador">' + tabs + '</div>' +
+    '<div class="trainer-collection">' + content + '</div></section>';
 }
+
+function tradeInbox() {
+  const p = state.you;
+  const groups = {
+    received:state.offers.filter(o => isPendingTrade(o) && o.to === p.id),
+    sent:state.offers.filter(o => isPendingTrade(o) && o.from === p.id),
+    history:state.offers.filter(o => !isPendingTrade(o)).reverse(),
+  };
+  const tabs = [["received","Recebidas"], ["sent","Enviadas"], ["history","Histórico"]]
+    .map(([id, label]) => '<button data-action="tradeTab" data-args="' + esc(JSON.stringify({id})) +
+      '" aria-pressed="' + (tradeTab === id) + '">' + label + ' · ' + groups[id].length + '</button>').join("");
+  const offers = groups[tradeTab];
+  return '<div class="exchange-tabs" aria-label="Caixa de ofertas">' + tabs + '</div>' +
+    (offers.length ? offers.map(tradeOfferCard).join("") :
+      '<p class="exchange-empty">Nenhuma oferta nesta aba.</p>');
+}
+
+function renderTrade(s) {
+  const roster = $("tradeRoster"), alert = $("tradeAlert"), dialog = $("tradeDialog");
+  const context = s.code + ":" + s.you.id + ":" + s.round;
+  if (tradeContext !== context) {
+    tradeContext = context;
+    tradePartner = tradeScreen = tradeCounter = tradeConfirm = "";
+    tradeTab = "received";
+    tradeDrafts.clear();
+    tradeDraft = {give:[], want:[]};
+    dismissedTradeAlerts.clear();
+  }
+  const enabled = s.phase === "actions";
+  roster.hidden = !enabled;
+  $("hudOffers").hidden = !enabled;
+  if (!enabled) tradeScreen = "";
+  const received = s.offers.filter(o => isPendingTrade(o) && o.to === s.you.id);
+  if (enabled) {
+    const markup = s.players.filter(q => q.id !== s.you.id).map(q =>
+        '<button type="button" id="trade-trainer-' + esc(q.id) +
+        '" class="trade-trainer" data-action="tradePartner" data-args="' +
+        esc(JSON.stringify({id:q.id})) + '" aria-label="Ver ficha de ' + esc(q.name) + '" title="' +
+        esc(q.name) + '">' + trainerSprite(q.avatar, "trainer-preview") + '<span>' + esc(q.name) +
+        '</span></button>').join("");
+    updateRegion($("tradePlayers"), markup);
+    $("hudOffers").querySelector("span").textContent = received.length ? "Ofertas (" + received.length + ")" : "Ofertas";
+    updateTradeScroll();
+  }
+  const offer = enabled && received.find(o => !dismissedTradeAlerts.has(o.id));
+  if (tradeAlertSignature !== offer?.id) {
+    tradeAlertSignature = offer?.id;
+    if (offer) {
+      const sender = s.players.find(q => q.id === offer.from);
+      alert.innerHTML = '<span role="status">' + esc(sender.name) + ' propôs uma troca.</span>' +
+        btn("Ver proposta", "tradeOpenOffer", {id:offer.id}) +
+        '<button type="button" aria-label="Dispensar aviso" data-action="tradeDismissAlert" data-args="' +
+        esc(JSON.stringify({id:offer.id})) + '">×</button>';
+    }
+  }
+  alert.hidden = !offer;
+  if (!tradeScreen) {
+    if (dialog.open) dialog.close();
+    return;
+  }
+  const partner = s.players.find(q => q.id === tradePartner);
+  let body, title, footer = "";
+  if (tradeScreen === "inbox") {
+    title = "Ofertas";
+    body = tradeInbox();
+  } else if (tradeScreen === "profile") {
+    title = "Ficha do treinador";
+    body = tradeProfile(partner);
+    footer = btn("Propor troca", "tradeCompose", {}, "primary");
+  } else {
+    const counter = s.offers.find(o => o.id === tradeCounter && isPendingTrade(o));
+    title = (tradeCounter ? "Contraproposta para " : "Proposta para ") + partner.name;
+    body = '<div class="exchange-terms">' + tradeEditor("give", "Você entrega", s.you) +
+      tradeEditor("want", "Você recebe", partner) + '</div>' + tradeWarning(tradeDraft.give, tradeDraft.want) +
+      (tradeCounter && !counter ? '<p class="exchange-warning">A proposta original foi encerrada.</p>' : "");
+    footer = btn("Voltar à ficha", "tradeProfile") +
+      (tradeCounter ? btn("Descartar contraproposta", "tradeDiscard") : "") +
+      '<button type="button" class="primary" data-action="tradeSend"' +
+      (!tradeDraft.give.length || !tradeDraft.want.length || (tradeCounter && !counter) ? ' disabled' : '') + '>' +
+      (tradeCounter ? 'Enviar contraproposta' : 'Enviar proposta') + '</button>';
+  }
+  dialog.dataset.view = tradeScreen;
+  $("tradeTitle").textContent = title;
+  updateRegion($("tradeBody"), body);
+  updateRegion($("tradeFooter"), footer);
+  $("tradeFooter").hidden = !footer;
+  if (!dialog.open) dialog.showModal();
+}
+
+function updateRegion(region, markup) {
+  if (region.dataset.markup === markup) return;
+  region.innerHTML = markup;
+  region.dataset.markup = markup;
+}
+
+$("tradeDialog").addEventListener("close", () => {
+  if (!$("tradeDialog").open) tradeScreen = "";
+});
 
 function tradeInteraction(action, d) {
-  if (action === "tradePartner") {
+  if (state.phase !== "actions") return;
+  $("tradeFeedback").textContent = "";
+  if (action === "tradeClose") {
+    tradeScreen = "";
+  } else if (action === "tradeDismissAlert") {
+    dismissedTradeAlerts.add(d.id);
+  } else if (action === "tradeOpenOffer" || action === "tradeInbox") {
+    tradeScreen = "inbox";
+    tradeTab = "received";
+    tradeConfirm = d.id || "";
+    if (d.id) dismissedTradeAlerts.add(d.id);
+  } else if (action === "tradeCompose") {
+    tradeScreen = "table";
+  } else if (action === "tradeProfile") {
+    tradeScreen = "profile";
+  } else if (action === "tradePartner") {
     selectTradePartner(d.id);
-    tradeOwnProfile = false;
-    tradeMobile = "profile";
-  } else if (action === "tradeOwnProfile") {
-    tradeOwnProfile = !tradeOwnProfile;
-    tradePage = 0;
+    tradeScreen = "profile";
   } else if (action === "tradeProfileTab") {
     tradeProfileTab = d.id;
     tradePage = 0;
   } else if (action === "tradePage") {
-    tradePage += d.delta;
+    tradePage = Math.max(0, tradePage + d.delta);
   } else if (action === "tradeTab") {
     tradeTab = d.id;
     tradeConfirm = "";
-  } else if (action === "tradeMobile") {
-    tradeMobile = d.id;
-  } else if (action === "tradeAdd" || action === "tradePick") {
+  } else if (action === "tradeAdd") {
     const owner = d.side === "give" ? state.you : state.players.find(q => q.id === tradePartner);
-    const asset = tradeInventory(owner).find(a => tradeKey(a) === (d.key || v("tradeAsset-" + d.side)));
+    const asset = tradeInventory(owner).find(a => tradeKey(a) === v("tradeAsset-" + d.side));
     if (!asset) return;
     const side = tradeDraft[d.side];
     const existing = side.find(a => tradeKey(a) === tradeKey(asset));
     if (asset.kind === "mon") {
-      if (existing) return toast("Este Pokémon já está na proposta.");
+      if (existing) {
+        $("tradeFeedback").textContent = "Este Pokémon já está na proposta.";
+        return;
+      }
       side.push(asset);
     } else {
-      const qty = action === "tradePick" ? 1 : Number(v("tradeQty-" + d.side));
-      if (!Number.isSafeInteger(qty) || qty < 1 || qty + (existing?.qty || 0) > asset.qty)
-        return toast("Quantidade superior ao disponível ou inválida.");
+      const qty = Number(v("tradeQty-" + d.side));
+      if (!Number.isSafeInteger(qty) || qty < 1 || qty + (existing?.qty || 0) > asset.qty) {
+        $("tradeFeedback").textContent = "Quantidade superior ao disponível ou inválida.";
+        return;
+      }
       if (existing) existing.qty += qty;
       else side.push({...asset, qty});
-    }
-    if (action === "tradePick") {
-      tradeMobile = "table";
-      toast(d.side === "give" ? "Adicionado ao que você entrega." : "Adicionado ao que você recebe.");
     }
   } else if (action === "tradeRemove") {
     tradeDraft[d.side] = tradeDraft[d.side].filter(a => tradeKey(a) !== d.key);
@@ -1080,14 +1089,12 @@ function tradeInteraction(action, d) {
     tradeCounter = offer.id;
     tradeDraft = {give:structuredClone(tradeList(offer.want)), want:structuredClone(tradeList(offer.give))};
     tradeConfirm = "";
-    tradeMobile = "table";
+    tradeScreen = "table";
+  } else if (action === "tradeReview") {
+    tradeConfirm = d.id;
   } else if (action === "tradeDiscard") {
     tradeCounter = "";
     tradeDraft = {give:[], want:[]};
-  } else if (action === "tradeReview") {
-    tradeConfirm = d.id;
-  } else if (action === "tradeFinish") {
-    tradeConfirm = "finish";
   } else if (action === "tradeBack") {
     tradeConfirm = "";
   } else if (action === "tradeSend") {
@@ -1098,22 +1105,18 @@ function tradeInteraction(action, d) {
     return;
   }
   render();
+  if (action === "tradePage") {
+    const buttons = [...$("tradeBody").querySelectorAll('.pcNav button')];
+    const preferred = buttons[d.delta > 0 ? 1 : 0];
+    (preferred?.disabled ? buttons.find(button => !button.disabled) : preferred)?.focus({preventScroll:true});
+  }
+  if (["tradeCompose", "tradeProfile", "tradePartner", "tradeCounter", "tradeInbox", "tradeOpenOffer"].includes(action))
+    $("tradeTitle").focus({preventScroll:true});
+  if (d.id && (action === "tradeOpenOffer" || action === "tradeReview"))
+    $("trade-offer-" + d.id)?.scrollIntoView({block:"nearest"});
 }
 
-document.addEventListener("input", e => {
-  const input = e.target;
-  if (!["tradeSearch", "tradeType", "tradeShiny"].includes(input.id)) return;
-  if (input.id === "tradeSearch") tradeSearch = input.value.trim().toLocaleLowerCase("pt-BR");
-  if (input.id === "tradeType") tradeType = input.value;
-  if (input.id === "tradeShiny") tradeShiny = input.checked;
-  tradePage = 0;
-  const caret = input.id === "tradeSearch" ? input.selectionStart : null;
-  render();
-  if (caret !== null) $("tradeSearch")?.setSelectionRange(caret, caret);
-});
-
 function controls() {
-  if (state.phase === "trocas") return trade();
   const s = state,
     p = s.you;
   if (p.done)
@@ -1177,6 +1180,7 @@ function render() {
     $("game").hidden = false;
     renderWorld();
   }
+  renderTrade(s);
   for (const [id, value] of values) {
     const el = $(id);
     if (
@@ -1187,7 +1191,6 @@ function render() {
     )
       el.value = value;
   }
-  if ($("tradeType")) $("tradeType").value = tradeType;
   if ($("labFields")) updateLabTotal();
   opened.forEach((id) => {
     if ($(id)) $(id).open = true;
@@ -1380,7 +1383,25 @@ function uiIcon(name) {
 const menuBtn = (id, label, icon) =>
   '<button data-drawer="' + id + '" aria-pressed="' + ((personalPanels.has(id) ? personalDrawer : drawer) === id) + '">' +
   uiIcon(icon) + esc(label) + '</button>';
+
+function updateTradeScroll() {
+  const list = $("tradePlayers");
+  const max = Math.max(0, list.scrollWidth - list.clientWidth);
+  const fraction = list.scrollWidth ? list.clientWidth / list.scrollWidth : 1;
+  const thumb = $("tradeScrollTrack").firstElementChild;
+  $("tradeScrollTrack").parentElement.hidden = max < 2;
+  thumb.style.width = (100 * Math.min(1, fraction)) + "%";
+  thumb.style.left = (max ? 100 * (1 - fraction) * list.scrollLeft / max : 0) + "%";
+  $("tradeScrollBack").disabled = list.scrollLeft < 1;
+  $("tradeScrollForward").disabled = list.scrollLeft >= max - 1;
+}
+
 function initializeScreen() {
+  const trainers = $("tradePlayers");
+  trainers.addEventListener("scroll", updateTradeScroll, {passive:true});
+  new ResizeObserver(updateTradeScroll).observe(trainers);
+  $("tradeScrollBack").onclick = () => trainers.scrollBy({left:-trainers.clientWidth * .7});
+  $("tradeScrollForward").onclick = () => trainers.scrollBy({left:trainers.clientWidth * .7});
   $("content").addEventListener("input", (e) => {
     if (e.target.id !== "shopSearch") return;
     shopSearch = e.target.value;
@@ -1397,8 +1418,6 @@ function initializeScreen() {
   const soundSettings = $("soundSettings");
   const syncSoundSettings = () => {
     const { muted, music, effects } = gameAudio.preferences;
-    $("sound").textContent = muted ? "♪ ×" : "♪";
-    $("postSound").textContent = $("sound").textContent;
     $("soundMuted").checked = muted;
     $("musicVolume").value = music;
     $("effectsVolume").value = effects;
@@ -1409,7 +1428,7 @@ function initializeScreen() {
   document.addEventListener("pointerdown", gameAudio.unlock, {capture:true, passive:true});
   document.addEventListener("keydown", gameAudio.unlock, {capture:true});
   document.addEventListener("click", gameAudio.unlock, {capture:true});
-  $("sound").onclick = $("postSound").onclick = () => {
+  $("sound").onclick = $("postSound").onclick = $("hudSettings").onclick = () => {
     syncSoundSettings();
     soundSettings.showModal();
   };
@@ -1425,7 +1444,7 @@ function initializeScreen() {
       syncSoundSettings();
     };
   }
-  $("fullscreen").onclick = () => {
+  $("fullscreen").onclick = $("hudFullscreen").onclick = () => {
     const task = document.fullscreenElement
       ? document.exitFullscreen()
       : document.documentElement.requestFullscreen?.();
@@ -1493,6 +1512,7 @@ function initializeScreen() {
       if (personalPanels.has(target)) {
         personalDrawer = personalDrawer === target ? "" : target;
         render();
+        if (personalDrawer) $("personalTitle").focus({preventScroll:true});
       } else {
         const leavingShop = drawer === "shop";
         personalDrawer = "";
@@ -1507,8 +1527,10 @@ function initializeScreen() {
       render();
     }
     if (b.id === "dismissPersonal") {
+      const target = personalDrawer;
       personalDrawer = "";
       render();
+      $("dock").querySelector('[data-drawer="' + target + '"]')?.focus();
     }
     if (b.id === "dismiss") {
       if (drawer === "shop") {
@@ -1523,10 +1545,12 @@ function initializeScreen() {
     }
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape" || $("pokemonDetails").open || $("soundSettings").open) return;
+    if (e.key !== "Escape" || $("pokemonDetails").open || $("soundSettings").open || $("tradeDialog").open) return;
     if (personalDrawer) {
+      const target = personalDrawer;
       personalDrawer = "";
       render();
+      $("dock").querySelector('[data-drawer="' + target + '"]')?.focus();
     } else if (drawer) {
       if (drawer === "shop") {
         drawer = "local";
@@ -2822,90 +2846,114 @@ function renderMinigame(s) {
 
 let duelDraftKey = "";
 let duelPicks = [];
+let duelDraftSending = false, duelDraftQueued = false;
+
+function lineupTrainer(s, trainer, multi) {
+  const player = s.players.find(p => p.id === trainer.id);
+  const own = trainer.id === s.you.id;
+  const locked = Boolean(s.duel.selection.picked);
+  const picks = own ? duelPicks : trainer.selected || [];
+  const status = own ? (locked ? "Pronto" : "Você") :
+    trainer.ready ? "Pronto" : trainer.ally ? "Escolhendo" : "Rival";
+  const size = s.duel.selection.size;
+  const slots = Array.from({length:6}, (_, index) => {
+    const mon = player.party[index];
+    const order = mon ? picks.indexOf(mon.uid) + 1 : 0;
+    const text = mon ? '<b>' + esc(mon.name) + '</b>' : (multi ? "Slot " + (index + 1) : "Espaço livre");
+    const mark = '<span class="lineup-slot-mark">' + (multi ? uiIcon("ball") : index + 1) + '</span>';
+    const sprite = mon ? tokenMon(mon) : "";
+    const orderBadge = order ? '<span class="lineup-order" aria-label="Ordem ' + order + '">' + order + '</span>' : "";
+    const contents = mark + sprite + '<span class="lineup-slot-name">' + text + '</span>' + orderBadge;
+    if (own && mon) return '<li class="lineup-slot lineup-slot-own"><button type="button" data-duel-pick="' + esc(mon.uid) +
+      '" data-focus="pick-' + esc(mon.uid) + '" aria-pressed="' + Boolean(order) + '"' +
+      (locked ? ' disabled' : '') + '>' + contents + '</button><button type="button" class="lineup-summary" ' +
+      ' data-pokemon-details="' + esc(mon.uid) + '" data-focus="summary-' + esc(mon.uid) +
+      '" aria-label="Resumo de ' + esc(mon.name) + '">' + uiIcon("info") + '</button></li>';
+    return '<li class="lineup-slot"><div class="lineup-static' + (order ? ' picked' : '') +
+      (mon ? '' : ' empty') + '">' + contents + '</div></li>';
+  }).join("");
+  return '<article class="lineup-trainer"><div class="lineup-person">' + uiIcon("trainer") +
+    '<h3>' + esc(player.name) + '</h3><span class="lineup-status">' + status + '</span></div>' +
+    (multi ? '<p class="lineup-limit"><span>Escolha <b>' + size + '</b> de 6</span></p>' :
+      '<div class="lineup-limit">' + uiIcon("lineup") + '<b>' + (own ? "Seu time" : "Time adversário") +
+      '</b><span>' + size + (size === 1 ? ' espaço' : ' espaços') + '</span></div>') +
+    '<ol class="lineup-roster">' + slots + '</ol></article>';
+}
 
 function renderDuelTeam(s) {
   const screen = $("duelTeamScreen");
   const selection = s.phase === "duelos" && s.duel?.selection;
   screen.hidden = !selection;
   if (!selection) return;
-  const key = s.code + ":" + s.round;
+  const multi = s.duelFormat.selected.mode === "multi";
+  const key = s.code + ":" + s.round + ":" + s.you.id;
   if (duelDraftKey !== key) {
     duelDraftKey = key;
     duelPicks = [];
+    duelDraftSending = duelDraftQueued = false;
   }
   if (selection.picked) duelPicks = [...selection.picked];
+  else if (multi && !duelDraftSending) duelPicks = [...selection.draft];
   const focus = screen.contains(document.activeElement) ? document.activeElement.dataset.focus : "";
   const locked = Boolean(selection.picked);
-  const party = s.you.party;
-  const byUid = new Map(party.map(mon => [mon.uid, mon]));
-  const slots = Array.from({length:selection.size}, (_, index) => {
-    const mon = byUid.get(duelPicks[index]);
-    const lead = index < selection.leads;
-    return '<li class="duel-slot' + (lead ? ' opening' : '') + '"><span class="duel-slot-index">' +
-      (index + 1) + '</span>' + (mon ? tokenMon(mon) : '<span class="duel-slot-empty"></span>') +
-      '<div><b>' + esc(mon?.name || "Espaço vazio") + '</b><small>' +
-      (lead ? "Titular " + (index + 1) : "Reserva") + '</small></div>' +
-      (!locked && mon && index ? '<button type="button" data-duel-promote="' + esc(mon.uid) +
-        '" data-focus="order-' + esc(mon.uid) + '" aria-label="Subir ' + esc(mon.name) + '">↑</button>' : '') +
-      '</li>';
-  }).join("");
-  const roster = party.map(mon => {
-    const order = duelPicks.indexOf(mon.uid);
-    return '<div class="duel-candidate-row"><button type="button" class="duel-candidate" data-duel-pick="' + esc(mon.uid) +
-      '" data-focus="pick-' + esc(mon.uid) + '" aria-pressed="' + (order >= 0) + '"' +
-      (locked ? " disabled" : "") + '>' + tokenMon(mon) + '<span><b>' + esc(mon.name) +
-      '</b><small>Nv. ' + mon.level + '</small></span>' +
-      '<span class="duel-choice-order" aria-hidden="true">' + (order >= 0 ? order + 1 : "+") +
-      '</span></button><button type="button" class="duel-summary-button" data-pokemon-details="' +
-      esc(mon.uid) + '" data-focus="summary-' + esc(mon.uid) + '" aria-label="Resumo de ' +
-      esc(mon.name) + '">Resumo</button></div>';
-  }).join("");
-  const trainers = selection.trainers.map(trainer => {
-    const player = s.players.find(p => p.id === trainer.id);
-    const relation = trainer.id === s.you.id ? "Você" : trainer.ally ? "Aliado" : "Rival";
-    return '<li>' + trainerSprite(player.avatar, "duel-trainer-icon") + '<span><b>' + esc(player.name) +
-      '</b><small>' + relation + '</small></span><small class="' + (trainer.ready ? 'ready' : '') +
-      '">' + (trainer.ready ? "Pronto" : "Escolhendo") + '</small></li>';
-  }).join("");
-  const rivals = selection.trainers.filter(trainer => !trainer.ally && trainer.id !== s.you.id);
-  const rivalTeams = rivals.map(({id}) => {
-    const rival = s.players.find(player => player.id === id);
-    return '<article><h4>' + esc(rival.name) + '</h4><ul>' +
-      rival.party.map(mon => '<li>' + tokenMon(mon) + '<span><b>' + esc(mon.name) +
-        '</b><small>Nv. ' + mon.level + '</small></span></li>').join("") +
-      '</ul></article>';
-  }).join("");
-  const ready = duelPicks.length === selection.size;
-  screen.innerHTML = '<div class="duel-team-shell"><header class="duel-team-heading">' +
-    '<div><small>' + esc(s.duelFormat.selected.label) + ' · Nível ' + selection.level +
-    ' no duelo</small><h2>Escalar equipe</h2></div>' +
-    '<strong aria-live="polite">' + duelPicks.length + ' / ' + selection.size + '</strong></header>' +
-    '<div class="duel-team-layout"><section><h3>Sua equipe</h3><div class="duel-roster">' + roster +
-    '</div></section><section><h3>Ordem de entrada</h3><ol class="duel-slots">' + slots +
-    '</ol></section><section class="duel-participants"><h3>Treinadores</h3><ul>' + trainers +
-    '</ul></section><section class="duel-rivals"><h3>Equipe adversária</h3>' + rivalTeams +
-    '</section></div><footer class="duel-team-footer"><p role="status">' +
-    (locked ? "Esperando os outros treinadores." : "Selecione quem vai lutar. Use ↑ para ajustar a ordem.") +
-    '</p>' + (locked ? btn("Editar equipe", "duelEdit") :
-      '<button type="button" class="primary" data-action="duelTeam"' +
-      (ready ? '' : ' disabled') + '>Confirmar equipe</button>') +
-    btn("Desistir", "duelForfeit") + '</footer></div>';
+  const allyTeam = selection.trainers[0].ally ? "A" : "B";
+  const side = (members, rival) => '<section class="lineup-side' + (rival ? ' lineup-rivals' : '') + '">' +
+    (multi ? '<h3 class="lineup-banner">Equipe ' + (rival ? (allyTeam === "A" ? "B" : "A") : allyTeam) + '</h3>' : '') +
+    members.map(trainer => lineupTrainer(s, trainer, multi)).join("") + '</section>';
+  const allies = selection.trainers.filter(trainer => trainer.ally)
+    .sort((a, b) => Number(b.id === s.you.id) - Number(a.id === s.you.id));
+  const rivals = selection.trainers.filter(trainer => !trainer.ally);
+  const format = multi ? "2v2 Dupla" : s.duelFormat.selected.label;
+  const confirm = locked
+    ? '<button type="button" data-action="duelEdit" data-focus="confirm">Editar equipe</button>'
+    : '<button type="button" class="primary" data-action="duelTeam" data-focus="confirm"' +
+      (duelPicks.length === selection.size && !duelDraftSending ? '' : ' disabled') + '>' +
+      uiIcon("check") + 'Confirmar equipe</button>';
+  const instruction = locked ? "Aguardando os outros treinadores." :
+    multi ? "Cada jogador escolhe " + selection.size + " Pokémon. Seu aliado acompanha a seleção." :
+      "Clique para marcar ou desmarcar. A ordem dos cliques define a entrada.";
+  screen.dataset.format = multi ? "multi" : "solo";
+  updateRegion(screen, '<div class="duel-team-shell"><header class="duel-team-heading">' +
+    uiIcon("ball") + '<div><h2>Escalar equipe</h2><p>' + esc(format) + ' · Nível ' +
+    selection.level + ' no duelo</p></div><strong aria-live="polite">' + duelPicks.length + ' / ' +
+    selection.size + '</strong></header><div class="lineup-match">' + side(allies, false) +
+    '<div class="lineup-versus" aria-hidden="true"><b>VS</b></div>' + side(rivals, true) + '</div>' +
+    '<footer class="duel-team-footer"><p role="status">' + uiIcon("info") + esc(instruction) + '</p>' +
+    '<div>' + (!multi && !locked ? '<button type="button" data-duel-clear data-focus="clear"' +
+    (duelPicks.length ? '' : ' disabled') + '>Limpar</button>' : '') + confirm + '</div></footer></div>');
   if (focus) screen.querySelector('[data-focus="' + CSS.escape(focus) + '"]')?.focus({preventScroll:true});
 }
 
+async function syncDuelDraft() {
+  if (duelDraftSending) return;
+  const key = duelDraftKey;
+  duelDraftSending = true;
+  renderDuelTeam(state);
+  while (duelDraftQueued && key === duelDraftKey && state?.duel?.selection && !state.duel.selection.picked) {
+    duelDraftQueued = false;
+    await act("duelDraft", {round:state.round, uids:[...duelPicks]});
+  }
+  if (key !== duelDraftKey) return;
+  duelDraftSending = duelDraftQueued = false;
+  renderDuelTeam(state);
+}
+
 $("duelTeamScreen").addEventListener("click", event => {
-  const button = event.target.closest("[data-duel-pick], [data-duel-promote]");
+  const button = event.target.closest("[data-duel-pick], [data-duel-clear]");
   const selection = state?.duel?.selection;
-  if (!button || !selection || selection.picked || busy) return;
-  if (button.dataset.duelPromote) {
-    const index = duelPicks.indexOf(button.dataset.duelPromote);
-    if (index > 0) [duelPicks[index - 1], duelPicks[index]] = [duelPicks[index], duelPicks[index - 1]];
-  } else {
-    const uid = button.dataset.duelPick;
-    if (duelPicks.includes(uid)) duelPicks = duelPicks.filter(id => id !== uid);
-    else if (duelPicks.length < selection.size) duelPicks.push(uid);
-    else {
-      toast("Retire um Pokémon da escalação para trocar.");
+  if (!button || !selection || selection.picked || (busy && !duelDraftSending)) return;
+  const uid = button.dataset.duelPick;
+  if (!uid) duelPicks = [];
+  else if (duelPicks.includes(uid)) duelPicks = duelPicks.filter(id => id !== uid);
+  else if (duelPicks.length < selection.size) duelPicks.push(uid);
+  else {
+    toast("Desmarque um Pokémon para escolher outro.");
+    return;
+  }
+  if (state.duelFormat.selected.mode === "multi") {
+    duelDraftQueued = true;
+    if (!duelDraftSending) {
+      void syncDuelDraft();
       return;
     }
   }
@@ -2930,7 +2978,6 @@ function renderWorld() {
   const [periodIcon, periodLabel] = worldPeriods[period];
   setWorldLight($("game"), p.actions);
   document.body.classList.add("playing");
-  document.body.classList.toggle("reading-cards", s.phase === "cards");
   const phaseChanged = s.phase !== previousPhase;
   if (phaseChanged) {
     drawer = s.phase === "actions" ? "" : "phase";
@@ -2953,13 +3000,11 @@ function renderWorld() {
     if (p.notice && !p.notice.startsWith("Trabalho concluído.")) toast(p.notice);
   }
   $("gameHead").innerHTML =
-    '<div class="turn"><small>RODADA</small><b>' +
+    '<div class="turn"><small>Rodada</small><b>' +
     s.round +
     "<sub> / " +
     s.rounds +
-    '</sub></b></div><div class="turnName"><small>' +
-    esc(p.name) +
-    "</small><b>" +
+    '</sub></b></div><div class="turnName"><b>' +
     phases[s.phase] +
     "</b><span>" +
     p.actions +
@@ -2999,21 +3044,22 @@ function renderWorld() {
   }
   WorldMap.update(p.loc, s.players,
     s.phase === "actions" && !p.done && !p.enc && p.eliteRun == null && p.actions > 0, s.gyms);
-  const canReorder = ["actions", "trocas"].includes(s.phase) && !p.enc && !p.moveLesson;
-  $("partyRail").innerHTML =
-    "<small>EQUIPE</small>" +
+  const canReorder = s.phase === "actions" && !p.enc && !p.moveLesson;
+  updateRegion($("partyRail"),
+    '<div class="party-heading"><span>' + uiIcon("ball") + '</span><small>Equipe</small></div>' +
     Array.from({ length: 6 }, (_, i) => {
       const m = p.party[i];
       const slot = ' data-slot="' + i + '" data-team="party"';
-      if (!m) return '<span class="rail-empty"' + slot + ' aria-hidden="true"></span>';
+      if (!m) return '<span class="rail-empty"' + slot + ' aria-hidden="true">' + uiIcon("ball") + '</span>';
       const drag = canReorder ? ' draggable="true" data-mon="' + esc(m.uid) + '"' : "";
       return '<button type="button"' + slot + drag + ' data-pokemon-details="' + esc(m.uid) + '" aria-label="' +
         esc(m.name) + '">' + tokenMon(m) +
         '<progress aria-label="HP" value="' + m.hp + '" max="' + m.maxhp + '"></progress>' +
         "</button>";
-    }).join("");
+    }).join(""));
   $("partyRail").hidden = false;
   $("dock").innerHTML =
+    '<span class="dock-crest" aria-hidden="true">' + uiIcon("ball") + '</span>' +
     menuBtn(
       s.phase === "actions" && !p.done ? "local" : "phase",
       s.phase === "actions" && !p.done ? locName(p.loc) : phases[s.phase],
@@ -3090,10 +3136,6 @@ function renderWorld() {
   if (oldBattle && s.phase === "duelos") drawer = "phase";
   oldBattle = null;
   if (p.shopVisit && s.phase === "actions") drawer = "shop";
-  $("overlay").classList.toggle(
-    "widePhase",
-    drawer === "phase" && s.phase === "trocas",
-  );
   renderPersonalPanel();
   $("overlay").classList.toggle("visit", ["local", "league"].includes(drawer));
   $("overlay").classList.toggle("facility-full", ["shop", "facility"].includes(drawer));
@@ -3128,30 +3170,35 @@ function renderWorld() {
   }
 }
 
+const personalViews = {
+  profile: ["Perfil de treinador", "contact-round", () => profile()],
+  box: ["Box Pokémon", "archive", () => boxScreen()],
+  bag: ["Mochila", "backpack", bagPanel],
+  team: ["Equipe", "ball", teamPanel],
+};
+
 function renderPersonalPanel() {
   const open = Boolean(personalDrawer);
   const overlay = $("personalOverlay"), content = $("personalContent");
+  const viewChanged = overlay.dataset.view !== personalDrawer;
   overlay.hidden = !open;
-  overlay.classList.toggle("pc", personalDrawer === "box");
+  overlay.dataset.view = personalDrawer;
   $("overlay").inert = open;
   $("map").inert = open;
   if (!open) {
-    content.replaceChildren();
-  } else if (personalDrawer === "profile") {
-    content.innerHTML = profile();
-  } else if (personalDrawer === "box") {
-    content.innerHTML = boxScreen();
-  } else {
-    const tmp = document.createElement("div");
-    tmp.innerHTML = inventory();
-    content.replaceChildren(tmp.children[personalDrawer === "team" ? 0 : 2]);
+    updateRegion(content, "");
+    return;
   }
+  const [title, icon, body] = personalViews[personalDrawer];
+  updateRegion($("personalTitle"), uiIcon(icon) + '<span>' + title + '</span>');
+  updateRegion(content, body());
+  if (viewChanged) content.scrollTop = 0;
 }
 
 initializeScreen();
 poll();
 function pollNext() {
-  poll().finally(() => setTimeout(pollNext, state?.minigame === "race" ? 85 :
+  poll().finally(() => setTimeout(pollNext, state?.duel?.selection && state.duelFormat?.selected.mode === "multi" ? 400 : state?.minigame === "race" ? 85 :
     state?.arcade?.events || state?.minigame === "fog" ? 150 : state?.pairGame || state?.arcade || state?.alphabet ? 350 : 1100));
 }
 setTimeout(pollNext, 1100);

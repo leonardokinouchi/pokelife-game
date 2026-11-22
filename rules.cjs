@@ -325,8 +325,9 @@ function encounterPools(biome, level, period) {
   };
 }
 
-function wild(biome, targetLevel = 5, period, roll = randomInt) {
-  const level = clamp(Math.round(targetLevel) + randomInt(-1, 2), 1, 100);
+function wild(biome, targetLevel = 5, period, roll = randomInt, { fixedLevel = false } = {}) {
+  const variation = fixedLevel ? 0 : randomInt(-1, 2);
+  const level = clamp(Math.round(targetLevel) + variation, 1, 100);
   const { common, themed } = encounterPools(biome, level, period);
   return makeMon(pick(themed.length && roll(100) < themedEncounterChance * 100 ? themed : common).id, level);
 }
@@ -376,8 +377,8 @@ function silhouetteSpecies() {
     return { name: species.name, spriteId: species.spriteid, slug: m.slug, pokemonId: m.id };
   });
 }
-function encounter(biome, level, roll = randomInt, period) {
-  const pokemon = wild(biome, level, period, roll);
+function encounter(biome, level, roll = randomInt, period, options) {
+  const pokemon = wild(biome, level, period, roll, options);
   pokemon.shiny = roll(100) < 5;
   return pokemon;
 }

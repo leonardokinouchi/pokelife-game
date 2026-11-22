@@ -34,17 +34,17 @@ Após o primeiro deploy, abra o domínio em duas abas independentes, crie uma sa
 
 ## Rodadas
 
-A primeira rodada começa com uma carta Tutorial para cada treinador. Todos acompanham a leitura. Cada carta precisa ser confirmada pelo destinatário antes da próxima carta ou do início da expedição. Na abertura de rodadas seguintes, quem viajou seis ou mais trechos na última rodada tem 80% de chance de receber Cansaço e começar com oito ações. Quem passou a rodada sem batalha selvagem, de ginásio ou duelo tem 20% de chance de receber Pokémon preguiçoso se tiver equipe. Um Pokémon da equipe é sorteado, perde dez de felicidade e fica paralisado.
+A primeira rodada começa com uma carta Tutorial para cada treinador. Cada treinador vê e confirma suas próprias cartas em paralelo. Ao confirmar a última carta, o treinador pode começar a expedição imediatamente. Quem não recebeu cartas começa direto. A rodada só avança quando todos encerrarem suas ações. Na abertura de rodadas seguintes, quem viajou seis ou mais trechos na última rodada tem 80% de chance de receber Cansaço e começar com oito ações. Quem passou a rodada sem batalha selvagem, de ginásio ou duelo tem 20% de chance de receber Pokémon preguiçoso se tiver equipe. Um Pokémon da equipe é sorteado, perde dez de felicidade e fica paralisado.
 
 Os treinadores têm dez ações simultâneas. Trabalho, cura, exploração, carinho e desafio de ginásio custam uma ação cada. Curar a equipe também custa ₽ 100. Entrar na loja é grátis. Confirmar o carrinho custa uma ação e pode reunir compras e vendas na mesma transação. Organizar a equipe é livre. Assumir uma vaga custa uma ação. Os comandos internos de uma batalha de exploração ou ginásio fazem parte da ação que iniciou o encontro.
 
-Quando todos encerram as ações, cada jogador vê o resumo dos treinadores e confirma a leitura. Na etapa de trocas, é possível negociar dinheiro, itens e Pokémon. A transação acontece quando o destinatário aceita e os dois lados ainda têm os bens. O minigame opcional paga ₽ 180 por acerto. Em seguida, o servidor sorteia pares para os duelos. As equipes entram recuperadas no nível 50 em cópias temporárias e o vencedor ganha ₽ 250. Um treinador sem equipe perde por ausência contra uma equipe formada. Dois treinadores sem equipe empatam. Ao fim das ações da última rodada, a partida vai direto para a classificação final.
+Durante a expedição, abra a ficha de outro jogador na faixa Treinadores para consultar equipe, Box, mochila, emprego, saldo e insígnias e propor trocas de dinheiro, itens e Pokémon. O destinatário recebe um aviso e pode aceitar ou recusar pela caixa de ofertas. A troca é gratuita e só acontece se os dois lados ainda tiverem os bens. Quando todos encerram as ações, as propostas pendentes expiram e a rodada segue para o minigame opcional ou diretamente para os duelos. Cada minigame pode ser sorteado uma vez por partida. Se não houver um minigame elegível que ainda não saiu, a rodada segue para os duelos. O minigame paga ₽ 180 por acerto. O servidor sorteia os pares para os duelos. As equipes entram recuperadas no nível 50 em cópias temporárias e o vencedor ganha ₽ 250. Um treinador sem equipe perde por ausência contra uma equipe formada. Dois treinadores sem equipe empatam. Ao fim das ações da última rodada, a partida vai direto para a classificação final.
 
 Cada encontro selvagem tem 5% de chance de gerar um shiny. Todas as categorias contam em toda partida. O jogo soma 10 pontos por shiny capturado pelo treinador, 3 por espécie já registrada, 1 ponto por ₽ 200 de saldo final, 10 por insígnia e 40 por completar a Elite Four. Empates na maior pontuação compartilham a vitória.
 
 Carentesco dá 1 ponto por carinho. Duelos entre treinadores dá 5 pontos por vitória, incluindo vitórias por ausência.
 
-Vitórias em minigames rendem 5 pontos cada. Contam o acerto no desafio do Mercado, a vitória no Leilão, cada vencedor da Corrida e o primeiro lugar no Quiz do Milhão com pelo menos um acerto.
+Vitórias em minigames rendem 5 pontos cada.
 
 ## Progressão e conteúdo
 

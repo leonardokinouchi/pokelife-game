@@ -12,6 +12,8 @@
   <body>
     <svg class="icon-library" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
       <symbol id="icon-ball" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/><path d="M2 12h7m6 0h7"/></symbol>
+      <symbol id="icon-fullscreen" viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></symbol>
+      <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M10 2h4l.7 3 1.6.9 2.9-.9 2 3.5-2.2 2.1v1.8l2.2 2.1-2 3.5-2.9-.9-1.6.9-.7 3h-4l-.7-3-1.6-.9-2.9.9-2-3.5L5 12.4v-1.8L2.8 8.5l2-3.5 2.9.9L9.3 5z"/><circle cx="12" cy="11.5" r="3"/></symbol>
       <symbol id="icon-grid" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M2 2h9v9H2zM13 2h9v9h-9zM2 13h9v9H2zM13 13h9v9h-9z"/></symbol>
       <symbol id="icon-gem" viewBox="0 0 24 24"><path d="m12 2 10 10-10 10L2 12zM12 2l4 10-4 10M2 12h14"/></symbol>
       <symbol id="icon-dna" viewBox="0 0 24 24"><path d="M6 2c0 9 12 11 12 20M18 2c0 9-12 11-12 20M7 5h10M7 19h10"/></symbol>
@@ -23,6 +25,9 @@
       <symbol id="icon-tag" viewBox="0 0 24 24"><path d="M3 3h8l10 10-8 8L3 11z"/><circle cx="7.5" cy="7.5" r=".75"/></symbol>
       <symbol id="icon-wallet" viewBox="0 0 24 24"><path d="M20 8V6H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h15v-5M5 6l2-3h8l3 3m3 5h-6a2.5 2.5 0 0 0 0 5h6z"/></symbol>
       <symbol id="icon-check" viewBox="0 0 24 24"><path d="m4 12 5 5L20 6"/></symbol>
+      <symbol id="icon-trainer" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4" fill="currentColor" stroke="none"/><path d="M3 22v-2a9 9 0 0 1 18 0v2Z" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="icon-lineup" viewBox="0 0 24 24"><path d="M8 5h13M8 12h13M8 19h13M3 5h1M3 12h1M3 19h1"/></symbol>
+      <symbol id="icon-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 11v6m0-10h.01"/></symbol>
       <symbol id="icon-person" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4"/><path d="M4 22v-2a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v2z"/></symbol>
       <symbol id="icon-archive" viewBox="0 0 24 24"><rect width="20" height="5" x="2" y="3" rx="1" />
   <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
@@ -112,15 +117,34 @@
       </section>
       <section id="game" hidden>
         <div id="map"></div>
-        <div id="gameHead"></div>
+        <header id="expeditionHud">
+          <span class="expedition-mark" aria-hidden="true"><svg class="hud-icon"><use href="#icon-ball"></use></svg></span>
+          <div id="gameHead"></div>
+          <nav id="tradeRoster" aria-label="Treinadores da sala" hidden>
+            <div id="tradePlayers" class="trade-roster-players"></div>
+            <div class="trade-roster-scroll" hidden>
+              <button id="tradeScrollBack" type="button" aria-label="Rolar treinadores para a esquerda">‹</button>
+              <div id="tradeScrollTrack" aria-hidden="true"><span></span></div>
+              <button id="tradeScrollForward" type="button" aria-label="Rolar treinadores para a direita">›</button>
+            </div>
+          </nav>
+          <div id="expeditionTools">
+            <button id="hudOffers" type="button" data-action="tradeInbox" hidden><svg class="hud-icon" aria-hidden="true"><use href="#icon-tag"></use></svg><span>Ofertas</span></button>
+            <button id="hudFullscreen" type="button" aria-label="Tela cheia" title="Tela cheia"><svg class="hud-icon" aria-hidden="true"><use href="#icon-fullscreen"></use></svg></button>
+            <button id="hudSettings" type="button" aria-label="Configurações de som" aria-haspopup="dialog" title="Configurações"><svg class="hud-icon" aria-hidden="true"><use href="#icon-settings"></use></svg></button>
+          </div>
+        </header>
         <aside id="partyRail" aria-label="Equipe de seis Pokémon"></aside>
-        <nav id="dock"></nav>
+        <nav id="dock" aria-label="Menu da expedição"></nav>
         <div id="overlay" hidden>
-          <div class="panel-toolbar"><button type="button" id="postSound" aria-haspopup="dialog" aria-label="Configurações de som">♪</button><button id="dismiss" aria-label="Fechar">×</button></div>
+          <div class="panel-toolbar"><button type="button" id="postSound" aria-haspopup="dialog" aria-label="Configurações de som"><svg class="hud-icon" aria-hidden="true"><use href="#icon-settings"></use></svg></button><button id="dismiss" aria-label="Fechar">×</button></div>
           <div id="content"></div>
         </div>
-        <div id="personalOverlay" hidden>
-          <div class="panel-toolbar"><button id="dismissPersonal" aria-label="Fechar painel">×</button></div>
+        <div id="personalOverlay" role="region" aria-labelledby="personalTitle" hidden>
+          <div class="panel-toolbar personal-toolbar">
+            <h2 id="personalTitle" tabindex="-1"></h2>
+            <button id="dismissPersonal" type="button" aria-label="Fechar painel">×</button>
+          </div>
           <div id="personalContent"></div>
         </div>
         <div id="arena" hidden></div>
@@ -131,7 +155,7 @@
       </section>
     </main>
     <div class="system">
-      <button id="sound" type="button" aria-label="Configurações de som" aria-haspopup="dialog" title="Som">♪</button
+      <button id="sound" type="button" aria-label="Configurações de som" aria-haspopup="dialog" title="Som"><svg class="hud-icon" aria-hidden="true"><use href="#icon-settings"></use></svg></button
       ><button id="fullscreen" aria-label="Tela cheia">⛶</button>
     </div>
     <dialog id="soundSettings" aria-labelledby="soundSettingsTitle">
@@ -145,11 +169,21 @@
     </dialog>
     <dialog id="sessionEnded"><h2>Sala indisponível</h2><p>Esta sessão foi encerrada.</p><button data-action="home">Voltar ao lobby</button></dialog>
     <dialog id="roundCard" aria-labelledby="cardTitle"></dialog>
+    <dialog id="tradeDialog" class="exchange" aria-labelledby="tradeTitle">
+      <header class="trade-dialog-head">
+        <h2 id="tradeTitle" tabindex="-1"></h2>
+        <button type="button" data-action="tradeClose" aria-label="Fechar painel de trocas">×</button>
+      </header>
+      <div id="tradeBody" class="trade-dialog-body"></div>
+      <p id="tradeFeedback" role="status"></p>
+      <footer id="tradeFooter" class="trade-dialog-footer" hidden></footer>
+    </dialog>
     <dialog id="moveLesson" aria-labelledby="moveLessonTitle"></dialog>
     <dialog id="pokemonDetails" aria-labelledby="pokemonDetailsTitle"></dialog>
     <dialog id="evolutionScene" aria-labelledby="evolutionTitle"></dialog>
     <div id="itemTooltip" role="tooltip" hidden><strong></strong><span></span></div>
     <div id="toast" role="status" aria-live="polite" hidden></div>
+    <aside id="tradeAlert" aria-label="Nova proposta de troca" hidden></aside>
     <script src="phaser.js" defer></script>
     <script src="world.js" defer></script>
     <script src="map.js" defer></script>

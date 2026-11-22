@@ -3,7 +3,7 @@ const http = require("node:http");
 const path = require("node:path");
 const fs = require("node:fs");
 const { randomInt, randomUUID } = require("node:crypto");
-const { player, newRoom, view, command, advanceRace, advanceAuction, advancePractice, startMinigame, eligibleMinigames } = require("./game.cjs");
+const { player, newRoom, view, command, advanceRace, advanceAuction, advancePractice, startMinigame, eligibleMinigames, resumeLegacyTrades, skipArchivedMinigame } = require("./game.cjs");
 const { advanceMillion } = require("./million.cjs");
 const { advancePairGame } = require("./pair-minigames.cjs");
 const { advanceArcade } = require("./arcade.cjs");
@@ -51,10 +51,6 @@ function loadRoom(code) {
 }
 function unpack(buffer) {
   const room = deserialize(buffer);
-  if (room.phase === "resumo") {
-    room.phase = "trocas";
-    for (const p of room.players) p.done = false;
-  }
   if (room.phase === "lobby") {
     const reserved = new Set(room.players.map(p => p.avatar));
     const available = Object.keys(avatars).filter(avatar => !reserved.has(avatar));
@@ -152,6 +148,10 @@ function handleAction(d, roomCode, r, save, realtimeSession) {
   }
   p = r?.players.find((x) => x.token === d.token);
   if (!p) return answer(403, { error: "Sessão expirada." });
+  if (resumeLegacyTrades(r) || skipArchivedMinigame(r)) {
+    save(r);
+    return answer(200, {state:view(r, p), clock:Date.now()});
+  }
   if (d.action === "reopenTestLobby") {
     if (!r.testLobby || r.phase !== "final" || p.id !== r.host)
       return answer(409, {error:"Só o anfitrião pode reabrir um teste concluído."});

@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { beginRound, newRoom, player, command, view } = require("../game.cjs");
+const { beginRound, newRoom, player, command, view, resumeLegacyTrades } = require("../game.cjs");
 const { avatars, maxPlayers } = require("../public/world.js");
 const rules = require("../rules.cjs");
 function lobby(size) {
@@ -14,7 +14,7 @@ function lobby(size) {
 }
 function readTutorials(r) {
   for (const [i, player] of r.players.entries()) {
-    assert.equal(r.phase, "cards");
+    assert.equal(view(r, player).phase, "cards");
     assert.equal(r.cards[i].owner, player.id);
     command(r, player, "card", {id: r.cards[i].id});
   }
@@ -106,7 +106,7 @@ test("free travel still counts all six crossings for fatigue", () => {
   command(r, p, "card", {id:r.cards[0].id});
   assert.equal(p.actions, 8);
 });
-test("trade transfers once, cancels a stale offer and awards correct end scores", () => {
+test("expedition trades transfer once, allow finished trainers and expire at the phase boundary", () => {
   const r = lobby(2),
     [a, b] = r.players;
   command(r, a, "start", { ...options, rounds: 2 });
@@ -114,7 +114,6 @@ test("trade transfers once, cancels a stale offer and awards correct end scores"
   a.money = 200;
   b.items = { "poke-ball": 1 };
 
-    for (const p of r.players) command(r, p, "finish");
   const order = {
     to: b.id,
     give: { kind: "money", qty: 100 },
@@ -122,13 +121,21 @@ test("trade transfers once, cancels a stale offer and awards correct end scores"
   };
   command(r, a, "offer", order);
   command(r, a, "offer", order);
+  command(r, b, "finish");
+  assert.equal(r.phase, "actions");
+  assert.equal(r.offers[0].status, "pending");
   command(r, b, "accept", { id: r.offers[0].id });
   assert.throws(() => command(r, b, "accept", { id: r.offers[0].id }));
   assert.equal(a.money, 100);
   assert.equal(b.money, 100);
   assert.equal(a.items["poke-ball"], 1);
-  for (let i = 0; i < 2; i++)
-    for (const p of r.players) command(r, p, "finish");
+  assert.equal(a.actions, 10);
+  assert.equal(b.actions, 10);
+  command(r, a, "finish");
+  assert.equal(r.phase, "duelos");
+  assert.equal(r.offers[1].status, "expired");
+  assert.throws(() => command(r, b, "accept", {id:r.offers[1].id}), /durante a expedição/);
+  for (const p of r.players) command(r, p, "finish");
   assert.equal(r.round, 2);
   readRoundCards(r);
   assert.equal(r.phase, "actions");
@@ -139,7 +146,7 @@ test("trade transfers once, cancels a stale offer and awards correct end scores"
 test("mixed counteroffers replace the original and shared Pokémon can only be traded once", () => {
   const r = lobby(4);
   const [a, b, c, spectator] = r.players;
-  r.phase = "trocas";
+  r.phase = "actions";
   const mon = rules.createMon("abra", 10);
   a.party = [mon];
   a.items = {"poke-ball":2};
@@ -165,8 +172,126 @@ test("mixed counteroffers replace the original and shared Pokémon can only be t
   assert.equal(b.items["poke-ball"], 2);
   assert.equal(a.party.length, 0);
   command(r, b, "offer", {to:c.id, give:[{kind:"mon",id:mon.uid}], want});
-  command(r, c, "finish");
-  assert.equal(r.offers.at(-1).status, "cancelled");
+  const pending = r.offers.at(-1);
+  b.enc = {type:"wild"};
+  assert.throws(() => command(r, c, "accept", {id:pending.id}), /em um encontro/);
+  assert.equal(pending.status, "pending");
+  command(r, c, "decline", {id:pending.id});
+  assert.equal(pending.status, "declined");
+});
+
+for (const change of ["level", "form"]) {
+  test("a pending offer transfers the Pokémon with its current " + change, () => {
+    const r = lobby(2), [a, b] = r.players;
+    command(r, a, "start", options);
+    readTutorials(r);
+    const pikachu = rules.makeMon("pikachu", 20);
+    a.party.push(pikachu);
+    a.items["thunder-stone"] = 1;
+    b.money = 200;
+    command(r, a, "offer", {
+      to:b.id, give:{kind:"mon", id:pikachu.uid}, want:{kind:"money", qty:100},
+    });
+    const [offer] = r.offers;
+    if (change === "level") {
+      rules.addXP(pikachu, 5000);
+      assert.ok(pikachu.level > 20);
+    } else {
+      command(r, a, "item", {item:"thunder-stone", uid:pikachu.uid});
+      assert.equal(pikachu.slug, "raichu");
+    }
+    while (view(r, a).you.moveLesson) {
+      const {uid, move} = view(r, a).you.moveLesson;
+      assert.throws(() => command(r, b, "accept", {id:offer.id}), /escolhendo um golpe/);
+      assert.equal(offer.status, "pending");
+      command(r, a, "resolveMove", {uid, move, replace:null});
+    }
+    const pending = view(r, b).offers[0];
+    assert.equal(pending.give[0].pokemon.slug, "pikachu");
+    assert.equal(pending.give[0].pokemon.level, 20);
+    assert.equal(command(r, b, "accept", {id:offer.id}).tradeNotice, "Troca concluída.");
+    assert.equal(b.party[0].uid, offer.give[0].id);
+    assert.equal(b.party[0].slug, pikachu.slug);
+    assert.equal(b.party[0].level, pikachu.level);
+    assert.equal(a.party.length, 0);
+    assert.equal(b.money, 100);
+  });
+}
+
+test("a Pokémon that flees at round end leaves its pending offer expired", () => {
+  const r = lobby(2), [a, b] = r.players;
+  command(r, a, "start", {...options, rounds:3});
+  readTutorials(r);
+  r.round = 2;
+  const buneary = rules.makeMon("buneary");
+  buneary.happiness = 0;
+  a.party.push(buneary);
+  a.unhappyPokemon = [{uid:buneary.uid}];
+  b.money = 200;
+  beginRound(r, () => 99);
+  readRoundCards(r);
+  command(r, a, "offer", {
+    to:b.id, give:{kind:"mon", id:buneary.uid}, want:{kind:"money", qty:100},
+  });
+  const [offer] = r.offers;
+  command(r, a, "finish");
+  assert.equal(offer.status, "pending");
+  command(r, b, "finish");
+  assert.equal(r.phase, "duelos");
+  assert.equal(offer.status, "expired");
+  assert.equal(a.escapedPokemon[0].uid, buneary.uid);
+  for (const trainer of [a, b]) command(r, trainer, "finish");
+  readRoundCards(r);
+  assert.equal(r.round, 3);
+  assert.throws(() => command(r, b, "accept", {id:offer.id}), /Oferta indisponível/);
+  assert.deepEqual(a.party, []);
+  assert.deepEqual(b.party, []);
+  assert.equal(a.money, 0);
+  assert.equal(b.money, 200);
+});
+
+test("using a promised item invalidates a mixed offer without partial transfers", () => {
+  const r = lobby(2), [a, b] = r.players;
+  command(r, a, "start", options);
+  readTutorials(r);
+  const abra = rules.makeMon("abra");
+  const pikachu = rules.makeMon("pikachu");
+  a.party.push(abra);
+  b.party.push(pikachu);
+  b.money = 200;
+  b.items.potion = 1;
+  pikachu.hp--;
+  command(r, a, "offer", {
+    to:b.id, give:{kind:"mon", id:abra.uid},
+    want:[{kind:"money", qty:100}, {kind:"item", id:"potion", qty:1}],
+  });
+  const [offer] = r.offers;
+  command(r, b, "item", {item:"potion", uid:pikachu.uid});
+  assert.match(command(r, b, "accept", {id:offer.id}).tradeNotice, /Saldo ou estoque insuficiente/);
+  assert.equal(offer.status, "invalid");
+  assert.deepEqual(a.party, [abra]);
+  assert.deepEqual(b.party, [pikachu]);
+  assert.equal(a.money, 0);
+  assert.equal(b.money, 200);
+  assert.equal(a.items.potion, undefined);
+  assert.equal(b.items.potion, 0);
+});
+
+test("legacy trainer encounters close without reapplying expedition effects", () => {
+  const r = lobby(2), [a, b] = r.players;
+  command(r, a, "start", {...options, rounds:2});
+  readTutorials(r);
+  a.party.push(rules.makeMon("pikachu"));
+  a.party[0].happiness = 42;
+  r.phase = "trocas";
+  r.offers = [{id:"old", from:a.id, to:b.id}];
+  a.done = true;
+  assert.equal(resumeLegacyTrades(r), true);
+  assert.equal(a.done, false);
+  assert.equal(r.phase, "duelos");
+  assert.equal(a.party[0].happiness, 42);
+  assert.equal(view(r, b).offers[0].status, "expired");
+  assert.equal(resumeLegacyTrades(r), false);
 });
 test("healthy teams with saved battle PP and empty teams cannot be charged for healing", () => {
   const r = lobby(2), [p] = r.players;
@@ -296,17 +421,27 @@ test("field jobs require Pokémon of the right types and a specific workplace", 
   assert.throws(() => command(r, p, "work"));
 });
 
-test("round cards are public, ordered by owner and resolved once", () => {
+test("round cards are private, ordered per trainer and resolved once", () => {
   const r = lobby(2), [a,b] = r.players;
   command(r, a, "start", options);
   assert.equal(r.cards.length, 2);
   assert.equal(r.cards[0].type, "tutorial");
   assert.throws(() => command(r, b, "card", {id:r.cards[0].id}));
-  command(r, a, "card", {id:r.cards[0].id});
-  assert.equal(r.phase, "cards");
-  assert.throws(() => command(r, a, "move", {loc:"biome1"}));
   command(r, b, "card", {id:r.cards[1].id});
+  assert.equal(view(r, b).phase, "actions");
+  assert.equal(view(r, b).roundCards, null);
+  assert.equal(view(r, a).phase, "cards");
+  assert.throws(() => command(r, a, "finish"), /Confirme suas cartas/);
+  command(r, b, "hire", {job:"vendedor"});
+  assert.equal(b.actions, 9);
+  command(r, b, "finish");
   assert.equal(r.phase, "actions");
+  assert.equal(r.round, 1);
+  command(r, a, "card", {id:r.cards[0].id});
+  assert.equal(r.phase, "actions");
+  assert.equal(view(r, a).roundCards, null);
+  command(r, a, "finish");
+  assert.equal(r.phase, "final");
   r.round++;
   a.walks = 6;
   b.walks = 5;
@@ -317,9 +452,18 @@ test("round cards are public, ordered by owner and resolved once", () => {
   beginRound(r, () => rolls.shift());
   assert.deepEqual(r.cards.map(c => c.type), ["fatigue", "lazy", "lazy"]);
   const first = r.cards[0].id;
-  assert.deepEqual(view(r,a).cards, view(r,b).cards);
+  assert.equal(view(r,a).roundCards.active.id, first);
+  assert.equal(view(r,a).roundCards.total, 2);
+  const bView = view(r,b).roundCards;
+  assert.deepEqual(bView.active, {id:r.cards[2].id, type:"lazy", name:b.party[0].name});
+  assert.equal(bView.total, 1);
+  assert.ok(!JSON.stringify(view(r,a)).includes(r.cards[2].id));
+  assert.ok(!JSON.stringify(view(r,b)).includes(first));
+  assert.throws(() => command(r, a, "card", {id:r.cards[1].id}));
   assert.throws(() => command(r, a, "move", {loc:"biome1"}));
   command(r, a, "card", {id:first});
+  assert.equal(view(r,a).roundCards.read, 1);
+  assert.equal(view(r,a).roundCards.active.id, r.cards[1].id);
   assert.throws(() => command(r, a, "card", {id:first}));
   command(r, a, "card", {id:r.cards[1].id});
   command(r, b, "card", {id:r.cards[2].id});
@@ -333,6 +477,35 @@ test("round cards are public, ordered by owner and resolved once", () => {
   beginRound(r, () => 80);
   assert.equal(r.phase,"actions");
   assert.equal(a.actions,10);
+  a.walks = 6;
+  const nextRolls = [0];
+  beginRound(r, () => nextRolls.shift() ?? 99);
+  assert.equal(view(r, a).phase, "cards");
+  assert.equal(view(r, b).roundCards, null);
+  assert.equal(view(r, b).phase, "actions");
+  command(r, b, "work");
+  assert.equal(b.actions, 9);
+});
+
+test("saved shared-queue progress is honored when trainers reconnect", () => {
+  const {serialize, deserialize} = require("node:v8");
+  const r = lobby(4), [a] = r.players;
+  command(r, a, "start", options);
+  r.phase = "cards";
+  r.cardIndex = 2;
+  const saved = deserialize(serialize(r));
+  const [first, , third, fourth] = saved.players;
+  assert.equal(view(saved, first).phase, "actions");
+  assert.equal(view(saved, first).roundCards, null);
+  assert.throws(() => command(saved, first, "card", {id:r.cards[0].id}));
+  command(saved, first, "hire", {job:"vendedor"});
+  command(saved, fourth, "card", {id:r.cards[3].id});
+  const resumed = deserialize(serialize(saved));
+  assert.equal(view(resumed, resumed.players[3]).phase, "actions");
+  assert.equal(view(resumed, resumed.players[3]).roundCards, null);
+  assert.equal(view(resumed, third).roundCards.active.id, r.cards[2].id);
+  command(resumed, resumed.players[2], "card", {id:r.cards[2].id});
+  assert.equal(resumed.phase, "actions");
 });
 
 function readRoundCards(room) {
@@ -356,7 +529,7 @@ test("new round cards use their own roll thresholds and respect eligibility", ()
   rolls = [49, 19, 39, 19];
   beginRound(r, () => rolls.shift());
   assert.deepEqual(r.cards.map(c => c.type), ["restart-kit", "dusk-expedition", "quiet-camp", "dusk-expedition"]);
-  assert.equal(r.phase, "cards");
+  assert.equal(view(r, a).phase, "cards");
   assert.equal(a.items["poke-ball"] || 0, 0);
   assert.equal(b.quietCamp, undefined);
   readRoundCards(r);
@@ -442,6 +615,8 @@ test("dusk expedition rewards only a completed dusk exploration and pays once", 
   assert.deepEqual(command(r, a, "catch", { ball: "poke-ball" }), { caught: true });
   assert.equal(a.items["poke-ball"], 1);
   assert.equal(a.duskExpedition.complete, true);
+  for (let lesson; (lesson = view(r, a).you.moveLesson); )
+    command(r, a, "resolveMove", {uid:lesson.uid, move:lesson.move, replace:null});
 
   for (const winner of ["p1", "p2"]) {
     a.duskExpedition = { complete: false };
@@ -505,16 +680,16 @@ test("a Pokémon can only escape after its trainer reads the unhappy card", () =
   }
 
   finishPhase("actions");
-  assert.equal(r.phase, "trocas");
+  assert.equal(r.phase, "duelos");
   assert.deepEqual(r.cards, []);
   assert.deepEqual(a.box, [escaping]);
   assert.equal(recovering.happiness, 49);
   assert.equal(satisfied.happiness, 50);
 
   a.battled = true;
-  for (const phase of ["trocas", "duelos"]) finishPhase(phase);
+  finishPhase("duelos");
   assert.equal(r.round, 2);
-  assert.equal(r.phase, "cards");
+  assert.equal(view(r, a).phase, "cards");
   assert.deepEqual(r.cards.filter(c => c.type === "unhappy").map(c => [c.type, c.target]), [
     ["unhappy", recovering.uid],
     ["unhappy", escaping.uid],
@@ -528,7 +703,7 @@ test("a Pokémon can only escape after its trainer reads the unhappy card", () =
     [4, 4], [0, 0],
   ]);
   finishPhase("actions");
-  assert.equal(r.phase, "trocas");
+  assert.equal(r.phase, "duelos");
   assert.deepEqual(r.cards, []);
   assert.deepEqual(a.box, []);
   assert.ok(a.party.includes(recovering));
@@ -536,9 +711,9 @@ test("a Pokémon can only escape after its trainer reads the unhappy card", () =
   assert.ok(a.dex.includes(escaping.speciesId));
 
   a.battled = true;
-  for (const phase of ["trocas", "duelos"]) finishPhase(phase);
+  finishPhase("duelos");
   assert.equal(r.round, 3);
-  assert.equal(r.phase, "cards");
+  assert.equal(view(r, a).phase, "cards");
   assert.deepEqual(r.cards.filter(c => c.type === "cruel-trainer" || c.type === "unhappy").map(c => [c.type, c.target]), [
     ["cruel-trainer", escaping.uid],
   ]);
@@ -586,7 +761,7 @@ test("capture command reports the roll independently of encounter state", () => 
   }
 });
 
-test("Box remains usable after a player's actions end and during the trainer summary", () => {
+test("Box remains usable until every trainer ends the expedition", () => {
   const r = lobby(2), [a, b] = r.players;
   command(r, a, "start", { ...options, rounds: 2 });
   readTutorials(r);
@@ -597,10 +772,10 @@ test("Box remains usable after a player's actions end and during the trainer sum
   command(r, a, "box", { uid: onlyMon.uid });
   assert.deepEqual(a.party, []);
   assert.deepEqual(view(r, b).players[0].box, [onlyMon]);
-  command(r, b, "finish");
-  assert.equal(r.phase, "trocas");
   command(r, a, "box", { uid: onlyMon.uid });
   assert.deepEqual(view(r, b).players[0].party, [onlyMon]);
+  command(r, b, "finish");
+  assert.equal(r.phase, "duelos");
 });
 
 test("shop checkout validates a mixed cart atomically and spends one action", () => {
@@ -728,11 +903,6 @@ test("stone and trade evolutions record the before and after sprites for the own
     command(r, a, "resolveMove", { uid, move, replace: null });
   }
 
-  for (const phase of ["actions"]) {
-    assert.equal(r.phase, phase);
-    command(r, a, "finish");
-    command(r, b, "finish");
-  }
   b.money = 1;
   command(r, a, "offer", {
     to: b.id, give: { kind: "mon", id: kadabra.uid }, want: { kind: "money", qty: 1 },
@@ -760,6 +930,48 @@ test("both auctions require every player to have more than 100 for the draw", ()
   assert.ok(view(r, a).minigameOptions.includes("auction"));
   assert.ok(view(r, a).minigameOptions.includes("darkAuction"));
   assert.equal(view(r, a).auction.total, 1);
+});
+
+test("the same campaign draws each eligible minigame once and skips an exhausted draw", () => {
+  const {deserialize, serialize} = require("node:v8");
+  const {eligibleMinigames, startMinigame} = require("../game.cjs");
+  let r = lobby(2);
+  const eligible = eligibleMinigames(2, false);
+  const drawn = new Set();
+  for (let round = 1; round <= eligible.length; round++) {
+    r.round = round;
+    startMinigame(r);
+    assert.equal(r.phase, "minigame");
+    assert.deepEqual(view(r, r.players[0]).minigameOptions, eligible.filter(kind => !drawn.has(kind)));
+    assert.ok(!drawn.has(r.minigame));
+    drawn.add(r.minigame);
+    r = deserialize(serialize(r));
+  }
+  assert.deepEqual(r.drawnMinigames, [...drawn]);
+  r.round++;
+  r.rounds = r.round + 1;
+  r.phase = "actions";
+  for (const trainer of r.players) command(r, trainer, "finish");
+  assert.equal(r.phase, "duelos");
+  assert.deepEqual(r.drawnMinigames, [...drawn]);
+});
+
+test("legacy campaigns exclude their last minigame and draw newly eligible auctions", () => {
+  const {eligibleMinigames, startMinigame} = require("../game.cjs");
+  const r = lobby(2);
+  delete r.drawnMinigames;
+  r.minigame = "race";
+  startMinigame(r);
+  assert.equal(r.drawnMinigames[0], "race");
+  assert.notEqual(r.minigame, "race");
+  r.drawnMinigames = eligibleMinigames(2, false);
+  for (const trainer of r.players) trainer.money = 101;
+  startMinigame(r);
+  assert.deepEqual(view(r, r.players[0]).minigameOptions, ["auction", "darkAuction"]);
+  const first = r.minigame;
+  startMinigame(r);
+  assert.notEqual(r.minigame, first);
+  assert.deepEqual(view(r, r.players[0]).minigameOptions, [r.minigame]);
 });
 
 test("auction shares the lot, validates each bid and charges the winner once", () => {
@@ -1200,15 +1412,15 @@ test("duel roulette offers only formats supported by every party and room size",
 test("duel selection locks valid ordered party picks until every trainer confirms", () => {
   const r = lobby(2), [a,b] = r.players;
   r.rounds = 2;
-  r.phase = "trocas";
+  r.phase = "actions";
   r.mini = false;
   a.party = [rules.makeMon("bulbasaur"),rules.makeMon("squirtle", 10)];
   b.party = [rules.makeMon("charmander"),rules.makeMon("pikachu", 80)];
   const starter = a.party[1];
   Object.assign(starter, {nature:"Modest", evs:{spa:252}, hp:1, status:"par", pp:{tackle:0}});
-  const parties = structuredClone([a.party, b.party]);
   a.box = [rules.makeMon("pidgey")];
   for(const p of r.players) command(r,p,"finish");
+  const parties = structuredClone([a.party, b.party]);
   assert.equal(r.phase,"duelos");
   assert.equal(view(r,a).duel.selection.size,1);
   assert.equal(view(r,a).duel.selection.level,50);
@@ -1254,6 +1466,42 @@ test("both double formats normalize every selected Pokémon, including reserves"
   }
 });
 
+test("2v2 shares live drafts, confirmation and edits only with the teammate", () => {
+  const {eligibleDuelFormats} = require("../game.cjs");
+  const {serialize, deserialize} = require("node:v8");
+  let r = lobby(4);
+  for (const trainer of r.players) {
+    trainer.party = ["pikachu", "bulbasaur", "eevee", "abra"].map(species => rules.makeMon(species));
+  }
+  let [a, b, c, d] = r.players;
+  r.phase = "duelos";
+  r.duelFormat = {selected:eligibleDuelFormats(r.players).find(format => format.mode === "multi")};
+  r.duels = [{a:a.id, b:b.id, trainers:r.players.map(p => p.id), picks:{}, result:null}];
+  const first = a.party[0].uid;
+  const second = a.party[1].uid;
+  const status = (viewer, trainer) => view(r, viewer).duel.selection.trainers.find(entry => entry.id === trainer.id);
+  assert.throws(() => command(r, a, "duelForfeit"), /Duelo indisponível/);
+  assert.throws(() => command(r, a, "duelDraft", {round:r.round - 1, uids:[first]}), /rodada mudou/);
+  assert.throws(() => command(r, a, "duelDraft", {round:r.round, uids:[c.party[0].uid]}), /Seleção de equipe inválida/);
+  command(r, a, "duelDraft", {round:r.round, uids:[first, second]});
+  assert.deepEqual(status(c, a).selected, [first, second]);
+  assert.equal(status(c, a).ready, false);
+  assert.equal(Object.hasOwn(status(b, a), "selected"), false);
+  command(r, a, "duelDraft", {round:r.round, uids:[second]});
+  r = deserialize(serialize(r));
+  [a, b, c, d] = r.players;
+  assert.deepEqual(view(r, a).duel.selection.draft, [second]);
+  assert.deepEqual(status(c, a).selected, [second]);
+  command(r, a, "duelTeam", {uids:[second, first]});
+  assert.deepEqual(status(c, a).selected, [second, first]);
+  assert.equal(status(c, a).ready, true);
+  assert.equal(Object.hasOwn(status(d, a), "selected"), false);
+  assert.throws(() => command(r, a, "duelDraft", {round:r.round, uids:[]}), /Confirme sua escalação/);
+  command(r, a, "duelEdit");
+  assert.deepEqual(view(r, a).duel.selection.draft, [second, first]);
+  assert.equal(status(c, a).ready, false);
+});
+
 test("actions define each player's period and an encounter keeps its starting period", () => {
   const {actionPeriod}=require("../public/world.js");
   assert.deepEqual([10,6,5,4,3,0].map(actionPeriod),["day","day","dusk","dusk","night","night"]);
@@ -1261,11 +1509,17 @@ test("actions define each player's period and an encounter keeps its starting pe
   command(r,a,"start",options);
   readTutorials(r);
   a.loc="biome1";a.actions=4;
+  a.box.push(rules.makeMon("pikachu", 25));
   command(r,a,"explore");
   assert.equal(view(r,a).you.period,"night");
   assert.equal(view(r,a).you.enc.period,"dusk");
   assert.equal(view(r,a).you.enc.startedActions,4);
+  assert.equal(view(r,a).you.enc.wild.level, 5);
   assert.equal(view(r,b).you.period,"day");
+  b.loc = "biome1";
+  b.party.push(rules.makeMon("pikachu", 25));
+  command(r, b, "explore");
+  assert.ok(view(r,b).you.enc.wild.level >= 22 && view(r,b).you.enc.wild.level <= 28);
 });
 
 test("research jobs are hired and worked at the same laboratory", () => {
