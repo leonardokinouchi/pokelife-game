@@ -133,7 +133,7 @@ function pokemonClues(pokemon, generation, height, weight, color, stage) {
       "Pesa " + measurement(weight) + " kg.",
       "Sua cor principal é " + colorNames[color] + ".",
       stageNames[stage],
-    ]).slice(0, 3),
+    ]),
     falseHints: shuffle([
       "Tem o tipo " + typeNames[wrongType] + ".",
       "É da " + wrongGeneration + "ª geração.",
@@ -141,7 +141,7 @@ function pokemonClues(pokemon, generation, height, weight, color, stage) {
       "Pesa " + measurement(weight + 17) + " kg.",
       "Sua cor principal é " + wrongColor + ".",
       stageNames[(stage + 1) % stageNames.length],
-    ]).slice(0, 4),
+    ]),
   };
 }
 

@@ -1142,12 +1142,16 @@ test("duel selection locks valid ordered party picks until every trainer confirm
   r.rounds = 2;
   r.phase = "trocas";
   r.mini = false;
-  a.party = [rules.makeMon("bulbasaur"),rules.makeMon("squirtle")];
-  b.party = [rules.makeMon("charmander"),rules.makeMon("pikachu")];
+  a.party = [rules.makeMon("bulbasaur"),rules.makeMon("squirtle", 10)];
+  b.party = [rules.makeMon("charmander"),rules.makeMon("pikachu", 80)];
+  const starter = a.party[1];
+  Object.assign(starter, {nature:"Modest", evs:{spa:252}, hp:1, status:"par", pp:{tackle:0}});
+  const parties = structuredClone([a.party, b.party]);
   a.box = [rules.makeMon("pidgey")];
   for(const p of r.players) command(r,p,"finish");
   assert.equal(r.phase,"duelos");
   assert.equal(view(r,a).duel.selection.size,1);
+  assert.equal(view(r,a).duel.selection.level,50);
   assert.throws(() => command(r,a,"fight",{cmd:"move 1"}));
   assert.throws(() => command(r,a,"duelTeam",{uids:[a.box[0].uid]}));
   assert.throws(() => command(r,a,"duelTeam",{uids:a.party.map(m=>m.uid)}));
@@ -1162,6 +1166,32 @@ test("duel selection locks valid ordered party picks until every trainer confirm
   assert.equal(view(r,a).duel.selection,null);
   assert.equal(view(r,a).duel.battle.own.uid,a.party[1].uid);
   assert.equal(view(r,b).duel.battle.own.uid,b.party[1].uid);
+  const duel = view(r,a).duel.battle;
+  assert.deepEqual([duel.own.level, duel.foe.level], [50, 50]);
+  assert.equal(duel.own.hp, duel.own.maxhp);
+  assert.equal(duel.own.status, "");
+  const battle = r.duels[0].battle;
+  const side = battle.engine.sides.find(s => battle.roster.get(s.active[0]).uid === starter.uid);
+  const expectedSpA = Math.floor((Math.floor((100 + starter.ivs.spa + 63) / 2) + 5) * 1.1);
+  assert.equal(side.active[0].storedStats.spa, expectedSpA);
+  command(r, a, "duelForfeit");
+  assert.deepEqual([a.party,b.party], parties);
+});
+
+test("both double formats normalize every selected Pokémon, including reserves", () => {
+  for (const [count, mode] of [[2,"doubles"], [4,"multi"]]) {
+    const r = lobby(count);
+    for (const p of r.players) p.party = [10, 80, 30, 70].map(level => rules.makeMon("pikachu", level));
+    const selected = require("../game.cjs").eligibleDuelFormats(r.players).find(format => format.mode === mode);
+    const [a,b] = r.players;
+    r.phase = "duelos";
+    r.duelFormat = {selected};
+    r.duels = [{a:a.id,b:b.id,trainers:r.players.map(p => p.id),picks:{},result:null}];
+    for (const p of r.players) command(r, p, "duelTeam", {uids:p.party.slice(0,selected.size).map(m => m.uid)});
+    const battle = r.duels[0].battle;
+    assert.ok(battle.engine.sides.every(side => side.pokemon.every(mon => mon.level === 50)));
+    for (const p of r.players) assert.deepEqual(p.party.map(mon => mon.level), [10,80,30,70]);
+  }
 });
 
 test("actions define each player's period and an encounter keeps its starting period", () => {

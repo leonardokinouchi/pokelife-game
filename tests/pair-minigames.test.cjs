@@ -61,7 +61,9 @@ test("Adivinha only releases collected clues to the partner and ends on the firs
   const now = room.pairGame.deadline - 53000;
   const guideView = view(room, guide).pairGame;
   assert.deepEqual(guideView.captured, []);
-  assert.equal(guideView.butterflies.length, 7);
+  assert.equal(guideView.butterflies.length, 12);
+  assert.equal(guideView.butterflies.filter(clue => clue.shiny).length, 6);
+  assert.equal(guideView.butterflies.filter(clue => !clue.shiny).length, 6);
   assert.deepEqual(guideView.butterflies.filter(clue => clue.shiny).map(clue => clue.text).sort(), [...team.hints].sort());
   assert.equal(view(room, actor).pairGame.butterflies, undefined);
   assert.equal(view(room, actor).pairGame.pokemon, undefined);

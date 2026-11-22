@@ -4,13 +4,15 @@ const { BattleSession } = require("./battle.cjs");
 const { isQuiz, newMillion, millionOptions, recordAnswer, advanceMillion, millionView } = require("./million.cjs");
 const { isPairMinigame, newPairGame, pairAction, pairView, practicePair } = require("./pair-minigames.cjs");
 const { arcadeGames, newArcade, beginArcade, arcadeAction, arcadeView } = require("./arcade.cjs");
-const minigames = ["market", "auction", "race", "million", "darkAuction", "pokemonQuiz", "wires", "guess", ...arcadeGames];
+const { newAlphabet, beginAlphabet, answerAlphabet, alphabetView } = require("./alphabet.cjs");
+const minigames = ["market", "auction", "race", "million", "darkAuction", "pokemonQuiz", "wires", "guess", ...arcadeGames, "alphabet"];
 const archivedMinigames = new Set(["market", "elements", "claim"]);
 const eligibleMinigames = count => minigames.filter(kind =>
   !archivedMinigames.has(kind) && (!isPairMinigame(kind) || validPlayerCount(count)));
 const isAuction = kind => kind === "auction" || kind === "darkAuction";
 const auctionDuration = 20000;
 const auctionRevealDuration = 1800;
+const duelLevel = 50;
 
 const { actionPeriod, neighbors, avatars, validPlayerCount, leagueIsland, leaguePorts, hasLeagueAccess, hasLaboratory } = require("./public/world.js");
 
@@ -405,6 +407,7 @@ function view(r, p) {
       commandVersion: duel.commandVersions?.[p.id] || 0,
       selection: duel.picks && !duel.battle && !duel.result ? {
         size: r.duelFormat.selected.size,
+        level: duelLevel,
         leads: r.duelFormat.selected.mode === "doubles" ? 2 : 1,
         picked: duel.picks[p.id] || null,
         trainers: members.map((id, index) => ({
@@ -422,6 +425,7 @@ function view(r, p) {
     minigameOptions: r.phase === "minigame" ? eligibleMinigames(r.players.length) : null,
     pairGame: r.phase === "minigame" && isPairMinigame(r.minigame) ? pairView(r, p) : null,
     arcade: r.phase === "minigame" && arcadeGames.includes(r.minigame) ? arcadeView(r, p) : null,
+    alphabet: r.phase === "minigame" && r.minigame === "alphabet" ? alphabetView(r.alphabet) : null,
     million: r.phase === "minigame" && isQuiz(r.minigame) ? millionView(r.million, p) : null,
     quiz: r.phase === "minigame" && (!r.minigame || r.minigame === "market") && !p.done
       ? { a: p.quiz.a, b: p.quiz.b } : null,
@@ -544,6 +548,11 @@ function startMinigame(r, kind) {
   delete r.auction;
   delete r.pairGame;
   delete r.arcade;
+  delete r.alphabet;
+  if (kind === "alphabet") {
+    r.alphabet = newAlphabet(r.players);
+    return;
+  }
   if (arcadeGames.includes(r.minigame)) {
     r.arcade = newArcade(r);
     return;
@@ -648,6 +657,11 @@ function advancePractice(r) {
   const bot = r.players.find(p => p.id === r.practiceBot);
   const human = r.players.find(p => p.id !== bot.id);
   if (r.miniReady.length < r.players.length || bot.done) return;
+  if (r.minigame === "alphabet") {
+    if (!r.alphabet.winners || !human.done) return false;
+    command(r, bot, "alphabetContinue");
+    return true;
+  }
   if (arcadeGames.includes(r.minigame)) {
     if (r.arcade.results && human.done) {
       command(r, bot, "arcadeContinue");
@@ -864,8 +878,8 @@ function selectDuelTeam(r, duel, player, action, uids) {
   }
   const teams = Object.fromEntries(members.map((id, index) => {
     const trainer = r.players.find(p => p.id === id);
-    const team = structuredClone(picks[id].map(uid => trainer.party.find(mon => mon.uid === uid)));
-    team.forEach(rules.heal);
+    const team = picks[id].map(uid =>
+      rules.copyForBattleAtLevel(trainer.party.find(mon => mon.uid === uid), duelLevel));
     return ["p" + (index + 1), team];
   }));
   duel.battle = new BattleSession({ ...teams, mode:format.mode });
@@ -1473,11 +1487,24 @@ function execute(r, p, k, d = {}) {
         r.pairGame.deadline = Date.now() + 60000;
       if (arcadeGames.includes(r.minigame) && r.miniReady.length === r.players.length)
         beginArcade(r);
+      if (r.minigame === "alphabet" && r.miniReady.length === r.players.length)
+        beginAlphabet(r.alphabet);
       if (isAuction(r.minigame)) advanceAuction(r);
       return;
     }
     if (r.minigame === "race") {
       raceAction(r, p, k, d, Date.now());
+      return;
+    }
+    if (r.minigame === "alphabet") {
+      if (r.alphabet.winners) {
+        check(k === "alphabetContinue", "O minigame terminou.");
+        p.done = true;
+        next(r);
+      } else {
+        check(k === "alphabetAnswer", "Digite o nome de um Pokémon.");
+        answerAlphabet(r, p, d);
+      }
       return;
     }
     if (isAuction(r.minigame)) {

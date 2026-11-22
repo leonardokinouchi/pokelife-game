@@ -384,6 +384,13 @@ function heal(mon) {
   mon.status = "";
   return mon;
 }
+function copyForBattleAtLevel(mon, level) {
+  const copy = structuredClone(mon);
+  copy.level = level;
+  copy.xp = catalog.growth[record(copy).growth][level];
+  refresh(copy);
+  return heal(copy);
+}
 function toSet(mon) {
   return {
     name: mon.name,
@@ -566,6 +573,7 @@ module.exports = {
   moveName: (id) => Dex.moves.get(id).name,
   evolve,
   heal,
+  copyForBattleAtLevel,
   toSet,
   createMon: makeMon,
   encounter,

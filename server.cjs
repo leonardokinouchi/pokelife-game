@@ -7,6 +7,7 @@ const { player, newRoom, view, command, advanceRace, advanceAuction, advancePrac
 const { advanceMillion } = require("./million.cjs");
 const { advancePairGame } = require("./pair-minigames.cjs");
 const { advanceArcade } = require("./arcade.cjs");
+const { advanceAlphabet } = require("./alphabet.cjs");
 const { avatars, maxPlayers } = require("./public/world.js");
 const rooms = new Map(),
   root = path.join(__dirname, "public");
@@ -192,7 +193,8 @@ function handleAction(d, roomCode, r, save, realtimeSession) {
     else save(null);
     return answer(200, { left: true });
   }
-  if (advanceRace(r) || advanceMillion(r) || advanceAuction(r) || advancePairGame(r) || advanceArcade(r)) save(r);
+  if (advanceRace(r) || advanceMillion(r) || advanceAuction(r) || advancePairGame(r) || advanceArcade(r) ||
+      advanceAlphabet(r)) save(r);
   let result;
   if (d.action !== "state") {
     result = command(r, p, d.action, d);

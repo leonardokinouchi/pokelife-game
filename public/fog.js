@@ -15,7 +15,7 @@ function renderFog() {
 }
 
 document.addEventListener("keydown", event => {
-  if (state?.phase !== "minigame" || state.minigame !== "fog" || !document.querySelector("#fogStage") ||
+  if ($("soundSettings").open || state?.phase !== "minigame" || state.minigame !== "fog" || !document.querySelector("#fogStage") ||
       event.ctrlKey || event.altKey || event.metaKey) return;
   const key = event.key.toLowerCase();
   const canonical = event.key.startsWith("Arrow") ? event.key : key;
@@ -26,13 +26,15 @@ document.addEventListener("keydown", event => {
 document.addEventListener("keyup", event => {
   fogHeldKeys.delete(event.key.startsWith("Arrow") ? event.key : event.key.toLowerCase());
 });
+$("soundSettings").addEventListener("focusin", () => fogHeldKeys.clear());
 window.addEventListener("blur", () => fogHeldKeys.clear());
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) fogHeldKeys.clear();
 });
 
 function fogBeamSound() {
-  if (muted || audio?.state !== "running") return;
+  const audio = gameAudio.context;
+  if (gameAudio.preferences.muted || audio?.state !== "running") return;
   const start = audio.currentTime;
   const filter = audio.createBiquadFilter();
   filter.type = "lowpass";
@@ -42,7 +44,7 @@ function fogBeamSound() {
   gain.gain.setValueAtTime(.0001, start);
   gain.gain.exponentialRampToValueAtTime(.11, start + .035);
   gain.gain.exponentialRampToValueAtTime(.0001, start + .72);
-  filter.connect(gain).connect(audio.destination);
+  filter.connect(gain).connect(gameAudio.effects);
   for (const [type, from, to] of [["sawtooth", 580, 78], ["triangle", 126, 38]]) {
     const oscillator = audio.createOscillator();
     oscillator.type = type;

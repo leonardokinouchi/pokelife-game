@@ -131,9 +131,18 @@
       </section>
     </main>
     <div class="system">
-      <button id="sound" aria-label="Alternar som">♪</button
+      <button id="sound" type="button" aria-label="Configurações de som" aria-haspopup="dialog" title="Som">♪</button
       ><button id="fullscreen" aria-label="Tela cheia">⛶</button>
     </div>
+    <dialog id="soundSettings" aria-labelledby="soundSettingsTitle">
+      <h2 id="soundSettingsTitle">Som</h2>
+      <label class="sound-mute"><input type="checkbox" id="soundMuted"> Silenciar todo o som</label>
+      <label for="musicVolume">Música <output id="musicLevel" for="musicVolume"></output></label>
+      <input type="range" id="musicVolume" min="0" max="100" step="1">
+      <label for="effectsVolume">Efeitos <output id="effectsLevel" for="effectsVolume"></output></label>
+      <input type="range" id="effectsVolume" min="0" max="100" step="1">
+      <form method="dialog"><button type="submit">Fechar</button></form>
+    </dialog>
     <dialog id="sessionEnded"><h2>Sala indisponível</h2><p>Esta sessão foi encerrada.</p><button data-action="home">Voltar ao lobby</button></dialog>
     <dialog id="roundCard" aria-labelledby="cardTitle"></dialog>
     <dialog id="moveLesson" aria-labelledby="moveLessonTitle"></dialog>
@@ -146,6 +155,7 @@
     <script src="map.js" defer></script>
     <script src="storage.js" defer></script>
     <script src="results.js" defer></script>
+    <script src="audio.js" defer></script>
     <script src="app.js" defer></script>
     <script src="fog.js" defer></script>
   </body>

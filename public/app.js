@@ -315,6 +315,9 @@ function setState(s, afterPlayback = false) {
     queuedBattleState = s;
     return;
   }
+  if (state?.alphabet?.startsAt && s.alphabet?.startsAt === state.alphabet.startsAt &&
+      (s.alphabet.turn !== state.alphabet.turn || (!state.alphabet.winners && s.alphabet.winners)))
+    playNotes(s.alphabet.last?.name ? [[520,710,.12],[710,880,.15]] : [[240,105,.22]]);
   const before = state?.you.enc?.battle || (!state?.duel?.result && state?.duel?.battle);
   const after = s.you.enc?.battle || (!state?.duel?.result && s.duel?.battle);
   const terminalEvents = state?.you.enc?.battle && !s.you.enc &&
@@ -419,6 +422,7 @@ function renderEvolution(s) {
     '<button type="button" hidden>Continuar</button>';
   const button = dialog.querySelector("button");
   dialog.showModal();
+  updateMusic();
   const reveal = () => {
     dialog.classList.remove("evolving");
     dialog.classList.add("evolved");
@@ -1149,7 +1153,7 @@ function render() {
     p = s.you;
   const active = document.activeElement?.id;
   const values = new Map(
-    [...document.querySelectorAll("input[id],select[id]")].map((el) => [
+    [...document.querySelectorAll("input[id]:not(#soundSettings input),select[id]")].map((el) => [
       el.id,
       el.value,
     ]),
@@ -1187,7 +1191,8 @@ function render() {
   opened.forEach((id) => {
     if ($(id)) $(id).open = true;
   });
-  if (active) $(active)?.focus({ preventScroll: true });
+  if (active && !$("soundSettings").open) $(active)?.focus({ preventScroll: true });
+  updateMusic(s);
 }
 document.addEventListener("click", (e) => {
   const b = e.target.closest("button");
@@ -1207,9 +1212,11 @@ document.addEventListener("click", (e) => {
   }
   if (k === "wireListen") {
     const text = state?.pairGame?.practiceSpeech;
-    if (!text || !("speechSynthesis" in window)) return;
+    const { muted, effects } = gameAudio.preferences;
+    if (!text || muted || !effects || !("speechSynthesis" in window)) return;
     const voice = new SpeechSynthesisUtterance(text);
     voice.lang = "pt-BR";
+    voice.volume = effects / 100;
     speechSynthesis.cancel();
     speechSynthesis.speak(voice);
     return;
@@ -1316,22 +1323,39 @@ let drawer = "",
   oldBattle = null,
   previousPhase = "",
   previouslyDone = false,
-  lastNotice = "",
-  audio;
-let muted = localStorage.auroraMute === "1";
-function unlockGameAudio() {
-  if (muted) return;
-  try {
-    audio ??= new AudioContext();
-    if (audio.state !== "running") audio.resume().catch(() => {});
-  } catch {}
+  lastNotice = "";
+const gameAudio = window.AuroraAudio;
+
+function updateMusic(s = state) {
+  let scene = "title";
+  const ending = document.querySelector(".ending[data-music]");
+  if (ending) scene = ending.dataset.music;
+  else if ($("evolutionScene").open) scene = "evolution";
+  else if (!s || s.phase === "lobby") scene = "title";
+  else if (s.phase === "final") scene = "results";
+  else if (s.phase === "minigame") {
+    if (s.arcade?.results || s.million?.results || s.auction?.closed || s.pairGame?.finished ||
+        (s.race && raceResultReady(s.race))) scene = "results";
+    else if (s.minigame === "rhythm" && $("arcadeStage")) scene = "rhythm";
+    else if (["race", "magnetic", "sorter"].includes(s.minigame)) scene = "arcade";
+    else if (["fog", "darkAuction", "wires"].includes(s.minigame)) scene = "suspense";
+    else scene = "puzzle";
+  } else if (s.you.enc) {
+    scene = ["gym", "elite"].includes(s.you.enc.type) ? "duel" : "battle";
+  } else if (s.phase === "duelos" && (s.duel?.selection || (s.duel?.battle && !s.duel.result))) {
+    scene = "duel";
+  } else {
+    const location = LOCATIONS.find(site => site.id === s.you.loc);
+    const indoors = ["shop", "facility", "league"].includes(drawer);
+    scene = s.phase !== "actions" || indoors || (location && location.kind !== "biome") ? "town" : "explore";
+  }
+  gameAudio.setScene(scene);
 }
 
 function tone(hit = false) {
-  if (muted) return;
+  const audio = gameAudio.context;
+  if (gameAudio.preferences.muted || audio?.state !== "running") return;
   try {
-    unlockGameAudio();
-    if (!audio) return;
     const t = audio.currentTime,
       o = audio.createOscillator(),
       v = audio.createGain();
@@ -1340,7 +1364,7 @@ function tone(hit = false) {
     o.frequency.exponentialRampToValueAtTime(hit ? 45 : 870, t + 0.09);
     v.gain.setValueAtTime(0.055, t);
     v.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
-    o.connect(v).connect(audio.destination);
+    o.connect(v).connect(gameAudio.effects);
     o.start();
     o.stop(t + 0.12);
   } catch {}
@@ -1366,19 +1390,37 @@ function initializeScreen() {
   });
   for (const type of ["pointerover", "pointerout", "focusin", "focusout"])
     $("arena").addEventListener(type, updateMoveTooltip);
-  const updateSoundButton = () => {
+  $("evolutionScene").addEventListener("close", () => updateMusic());
+  const soundSettings = $("soundSettings");
+  const syncSoundSettings = () => {
+    const { muted, music, effects } = gameAudio.preferences;
     $("sound").textContent = muted ? "♪ ×" : "♪";
-    $("sound").setAttribute("aria-pressed", String(!muted));
+    $("soundMuted").checked = muted;
+    $("musicVolume").value = music;
+    $("effectsVolume").value = effects;
+    $("musicLevel").textContent = music + "%";
+    $("effectsLevel").textContent = effects + "%";
   };
-  updateSoundButton();
-  document.addEventListener("pointerdown", unlockGameAudio, {capture:true, passive:true});
-  document.addEventListener("keydown", unlockGameAudio, {capture:true});
+  syncSoundSettings();
+  document.addEventListener("pointerdown", gameAudio.unlock, {capture:true, passive:true});
+  document.addEventListener("keydown", gameAudio.unlock, {capture:true});
+  document.addEventListener("click", gameAudio.unlock, {capture:true});
   $("sound").onclick = () => {
-    muted = !muted;
-    localStorage.auroraMute = muted ? "1" : "0";
-    updateSoundButton();
-    unlockGameAudio();
+    syncSoundSettings();
+    soundSettings.showModal();
   };
+  $("soundMuted").onchange = (event) => {
+    gameAudio.update("muted", event.target.checked);
+    if (event.target.checked) window.speechSynthesis?.cancel();
+    syncSoundSettings();
+  };
+  for (const key of ["music", "effects"]) {
+    $(key + "Volume").oninput = (event) => {
+      gameAudio.update(key, event.target.valueAsNumber);
+      if (key === "effects" && !event.target.valueAsNumber) window.speechSynthesis?.cancel();
+      syncSoundSettings();
+    };
+  }
   $("fullscreen").onclick = () => {
     const task = document.fullscreenElement
       ? document.exitFullscreen()
@@ -1477,7 +1519,7 @@ function initializeScreen() {
     }
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape") return;
+    if (e.key !== "Escape" || $("pokemonDetails").open || $("soundSettings").open) return;
     if (personalDrawer) {
       personalDrawer = "";
       render();
@@ -1836,6 +1878,7 @@ function arenaView(b, e) {
   );
 }
 const minigameNames = {
+  alphabet: "ABC-Pokémon",
   market: "Pedido do mercado", auction: "Leilão", race: "Corrida de sobrevivência",
   darkAuction: "Leilão no Escuro",
   million: "Show do Milhão - 999.000",
@@ -1846,6 +1889,7 @@ const minigameNames = {
   elements: "Três Cartas", twentyOne: "21 da Equipe Rocket", claim: "Par ou Roubo",
 };
 const miniInstructions = {
+  alphabet: "Na sua vez, digite em até 12 segundos um Pokémon com a letra do centro. Acerte para avançar a letra e passar a vez no sentido horário. Sem resposta válida, você sai e a próxima pessoa tenta a mesma letra. Cada nome só vale uma vez.",
   market: "Calcule o total da compra e envie sua resposta. Um acerto rende ₽ 180.",
   auction: "Há um lote por treinador. Dê um lance ou passe neste lote. Ao comprar um Pokémon, você sai da disputa. Sem lances, o jogo sorteia o lote entre quem ainda não comprou, por até ₽ 1.",
   darkAuction: "Há um lote por treinador. Você vê só a silhueta até a venda. Ao comprar um Pokémon, você sai da disputa. Sem lances, o jogo sorteia o lote entre quem ainda não comprou, por até ₽ 1.",
@@ -1944,6 +1988,7 @@ function animateRace() {
   if (raceResultReady(race)) {
     raceFrame = 0;
     renderMinigame(state);
+    updateMusic();
     return;
   }
   const elapsed = now - race.startsAt;
@@ -1992,7 +2037,7 @@ function animateRace() {
   raceFrame = requestAnimationFrame(animateRace);
 }
 document.addEventListener("keydown", event => {
-  if (!["ArrowUp","ArrowDown"].includes(event.key) || event.repeat ||
+  if ($("soundSettings").open || !["ArrowUp","ArrowDown"].includes(event.key) || event.repeat ||
       state?.phase !== "minigame" || !state.race || state.race.winners ||
       !state.race.runners[state.you.id].alive || Date.now() + serverOffset < state.race.startsAt ||
       !$("roundDraw").hidden) return;
@@ -2381,7 +2426,7 @@ function selectArcadeCard(choice) {
   const game = state?.arcade;
   if (!game || game.events || !game.start || game.results || game.reveal || game.you.standing ||
       game.you.choice !== null || Date.now() + serverOffset >= game.deadline ||
-      !$("roundDraw").hidden || busy) return;
+      !$("roundDraw").hidden || $("soundSettings").open || busy) return;
   if (choice === null) {
     if (arcadeSelected !== null) act("arcadePick", {choice:arcadeSelected, round:game.round});
   } else if (document.querySelector('[data-arcade-choice="' + choice + '"]')) {
@@ -2394,7 +2439,7 @@ function selectArcadeCard(choice) {
 
 document.addEventListener("keydown", event => {
   const game = state?.arcade;
-  if (!game?.start || game.results || game.reveal || !$("roundDraw").hidden || event.altKey ||
+  if ($("soundSettings").open || !game?.start || game.results || game.reveal || !$("roundDraw").hidden || event.altKey ||
       event.ctrlKey || event.metaKey || event.target.matches("input,textarea,select,[contenteditable]")) return;
   const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
   if (state.minigame === "magnetic" && Object.hasOwn(arcadeDirections, key)) {
@@ -2539,7 +2584,7 @@ function animateKeyboardArcade(stage, initial) {
       stage.classList.toggle("arcade-beat", events[nextSound - 1] && elapsed - events[nextSound - 1].at < 110);
       while (events[nextSound]?.at <= elapsed) {
         const event = events[nextSound++];
-        if (elapsed - event.at < 95) playNotes([[tones[event.lane], tones[event.lane] * .82, .12]]);
+        if (elapsed - event.at < 95) gameAudio.rhythmNote(tones[event.lane], nextSound - 1);
       }
     } else {
       const visible = [];
@@ -2643,6 +2688,74 @@ function renderArcade(s) {
     btn("Continuar", "arcadeContinue", {}, "primary")) + '</section>';
 }
 
+function renderAlphabet(s) {
+  const game = s.alphabet;
+  const players = new Map(s.players.map(p => [p.id, p]));
+  const active = players.get(game.active);
+  const canAnswer = !game.winners && game.active === s.you.id;
+  const announcement = game.last && (game.last.name
+    ? players.get(game.last.id).name + " acertou: " + game.last.name
+    : players.get(game.last.id).name + " ficou sem tempo.");
+  const winner = game.winners?.map(id => players.get(id).name).join(" e ");
+  return '<section class="abc-panel"><div class="abc-board"><div class="abc-ring" aria-label="Ordem no sentido horário">' +
+    game.order.map((id, i) => {
+      const angle = i * Math.PI * 2 / game.order.length;
+      const p = players.get(id);
+      return '<div class="abc-seat" style="--x:' + (50 + Math.sin(angle) * 42) +
+        '%;--y:' + (50 - Math.cos(angle) * 42) + '%" data-status="' +
+        (game.eliminated.includes(id) ? "out" : (game.winners ?? [game.active]).includes(id) ? "active" : "waiting") +
+        '" title="' + esc(p.name) + '">' + trainerSprite(p.avatar, "") + '<span>' + esc(p.name) + '</span></div>';
+    }).join("") + '</div><div class="abc-center"><span id="abcTimer"></span>' +
+    '<strong class="abc-letter">' + (game.winners ? "✦" : esc(game.letter)) + '</strong>' +
+    '<span aria-live="polite">' + (winner ? esc(winner) : canAnswer ? "Sua vez" : esc(active.name)) + '</span></div></div>' +
+    '<div class="abc-letters" aria-label="Letras da partida">' + game.letters.map(letter =>
+      '<span' + (letter === game.letter && !game.winners ? ' aria-current="true"' : '') + '>' + letter + '</span>').join("") +
+    '</div><p class="abc-last" role="status">' + esc(announcement) + '</p>' +
+    (canAnswer ? '<form id="alphabetForm"><label for="alphabetName">Pokémon com ' + esc(game.letter) + '</label>' +
+      '<div><input id="alphabetName" maxlength="60" autocomplete="off" spellcheck="false" required>' +
+      '<button type="submit" class="primary" disabled>Responder</button></div></form>' :
+      game.winners ? (s.you.done ? '<p>Aguardando o grupo…</p>' :
+        btn("Continuar", "alphabetContinue", {}, "primary")) :
+        '<p>' + (game.eliminated.includes(s.you.id) ? "Você foi eliminado. Acompanhe a partida." : "Aguardando sua vez…") + '</p>') +
+    '</section>';
+}
+
+let focusedAlphabetTurn;
+function animateAlphabet(timer, game) {
+  const input = $("alphabetName");
+  const button = $("alphabetForm")?.querySelector("button");
+  function tick() {
+    if (!timer.isConnected || timer.closest("[hidden]")) return;
+    if (game.winners) {
+      timer.textContent = game.winners.length > 1 ? "Empate" : "Vencedor";
+      return;
+    }
+    const now = Date.now() + serverOffset;
+    const countdown = now < game.startsAt;
+    const seconds = Math.max(0, Math.ceil(((countdown ? game.startsAt : game.deadline) - now) / 1000));
+    const text = countdown ? String(Math.min(3, seconds)) : seconds + " s";
+    if (timer.textContent !== text) timer.textContent = text;
+    timer.classList.toggle("abc-countdown", countdown);
+    if (button) button.disabled = countdown || seconds === 0;
+    const turnKey = game.startsAt + ":" + game.turn;
+    if (input && !countdown && seconds > 0 && focusedAlphabetTurn !== turnKey) {
+      focusedAlphabetTurn = turnKey;
+      input.focus({preventScroll:true});
+    }
+    setTimeout(tick, 90);
+  }
+  tick();
+}
+
+document.addEventListener("submit", event => {
+  if (event.target.id !== "alphabetForm") return;
+  event.preventDefault();
+  const game = state?.alphabet;
+  const name = v("alphabetName")?.trim();
+  if (name && game && !event.target.querySelector("button").disabled)
+    act("alphabetAnswer", {name, turn:game.turn});
+});
+
 function renderMinigame(s) {
   const p = s.you;
   const screen = $("minigameScreen");
@@ -2674,6 +2787,8 @@ function renderMinigame(s) {
     content = renderPairGame(s);
   } else if (s.arcade) {
     content = renderArcade(s);
+  } else if (s.alphabet) {
+    content = renderAlphabet(s);
   } else if (s.minigame === "market") {
     content = p.done
       ? '<div class="mini-result"><strong>' + esc(p.notice) + '</strong><p>Aguardando o grupo…</p></div>'
@@ -2693,6 +2808,8 @@ function renderMinigame(s) {
   if (pairClock) updateMiniClock(pairClock, s.pairGame.deadline);
   const arcadeClock = $("arcadeClock");
   if (arcadeClock) updateMiniClock(arcadeClock, s.arcade.deadline);
+  const abcTimer = $("abcTimer");
+  if (abcTimer) animateAlphabet(abcTimer, s.alphabet);
   const arcadeStage = $("arcadeStage");
   if (arcadeStage) animateKeyboardArcade(arcadeStage, s);
   if ($("fogStage")) animateFog($("fogStage"));
@@ -2756,7 +2873,8 @@ function renderDuelTeam(s) {
   }).join("");
   const ready = duelPicks.length === selection.size;
   screen.innerHTML = '<div class="duel-team-shell"><header class="duel-team-heading">' +
-    '<div><small>' + esc(s.duelFormat.selected.label) + '</small><h2>Escalar equipe</h2></div>' +
+    '<div><small>' + esc(s.duelFormat.selected.label) + ' · Nível ' + selection.level +
+    ' no duelo</small><h2>Escalar equipe</h2></div>' +
     '<strong aria-live="polite">' + duelPicks.length + ' / ' + selection.size + '</strong></header>' +
     '<div class="duel-team-layout"><section><h3>Sua equipe</h3><div class="duel-roster">' + roster +
     '</div></section><section><h3>Ordem de entrada</h3><ol class="duel-slots">' + slots +
@@ -3030,7 +3148,7 @@ initializeScreen();
 poll();
 function pollNext() {
   poll().finally(() => setTimeout(pollNext, state?.minigame === "race" ? 85 :
-    state?.arcade?.events || state?.minigame === "fog" ? 150 : state?.pairGame || state?.arcade ? 350 : 1100));
+    state?.arcade?.events || state?.minigame === "fog" ? 150 : state?.pairGame || state?.arcade || state?.alphabet ? 350 : 1100));
 }
 setTimeout(pollNext, 1100);
 
@@ -3060,7 +3178,8 @@ function playCaptureSound(effect) {
 }
 
 function playNotes(notes) {
-  if (muted || audio?.state !== "running") return;
+  const audio = gameAudio.context;
+  if (gameAudio.preferences.muted || audio?.state !== "running") return;
   notes.forEach(([from, to, duration], index) => {
     const start = audio.currentTime + index * .085;
     const oscillator = audio.createOscillator();
@@ -3071,7 +3190,7 @@ function playNotes(notes) {
     gain.gain.setValueAtTime(.0001, start);
     gain.gain.exponentialRampToValueAtTime(.075, start + .015);
     gain.gain.exponentialRampToValueAtTime(.0001, start + duration);
-    oscillator.connect(gain).connect(audio.destination);
+    oscillator.connect(gain).connect(gameAudio.effects);
     oscillator.start(start);
     oscillator.stop(start + duration);
   });
@@ -3208,9 +3327,11 @@ function battleEnding(won, message) {
   const stage = $("arena").cloneNode(true);
   stage.removeAttribute("id");
   stage.className = "ending";
+  stage.dataset.music = won ? "victory" : "defeat";
   stage.hidden = false;
   stage.querySelector(".console")?.remove();
   document.body.append(stage);
+  updateMusic();
   setTimeout(() => {
     const box = document.createElement("div");
     box.className = "resultBox";
@@ -3223,6 +3344,7 @@ function battleEnding(won, message) {
     stage.append(box);
     box.querySelector("button").onclick = () => {
       stage.remove();
+      updateMusic();
       renderEvolution(state);
       renderMoveLesson(state);
     };
@@ -3380,16 +3502,18 @@ function gymDetails(p) {
 }
 
 function pokemonCenter(p) {
+  const seal = '<i class="center-ball-seal" aria-hidden="true"></i>';
   const team = Array.from({ length: 6 }, (_, index) => {
     const m = p.party[index];
-    if (!m) return '<li class="center-mon center-vacant">Vaga livre</li>';
+    if (!m) return '<li class="center-mon center-vacant">' + seal + '<b>Vaga livre</b></li>';
     const status = statusName(m);
     const fraction = m.hp / m.maxhp;
     const hpColor = fraction <= .2 ? "#ce4a58" : fraction <= .5 ? "#bb811f" : "#3eaa57";
-    return '<li class="center-mon"><div class="center-mon-main">' + sprite(m) +
+    return '<li class="center-mon"><button type="button" class="center-mon-main" data-pokemon-details="' +
+      esc(m.uid) + '" aria-label="Ver detalhes de ' + esc(m.name) + '">' + sprite(m) +
       '<div><strong>' + esc(m.name) + '</strong><span>Nv. ' + m.level + '</span>' +
       (status ? '<span class="center-status">' + esc(status) + '</span>' : '') +
-      '</div></div><div class="center-hp"><b>HP</b><progress aria-label="HP de ' +
+      '</div></button><div class="center-hp"><b>HP</b><progress aria-label="HP de ' +
       esc(m.name) + '" style="accent-color:' + hpColor + '" data-health="' + esc(m.uid) +
       '" value="' + m.hp + '" max="' + m.maxhp + '"></progress><span data-hp-text="' +
       esc(m.uid) + '">' + m.hp + ' / ' + m.maxhp + '</span></div></li>';
@@ -3401,12 +3525,12 @@ function pokemonCenter(p) {
   const work = workOption(p, "center");
   const canAfford = p.money >= state.healCost;
   return '<section class="center-screen" data-theme="center" aria-labelledby="centerTitle">' +
-    '<div class="center-heading"><span aria-hidden="true" class="center-emblem">+</span>' +
+    '<div class="center-heading">' + seal + '<span aria-hidden="true" class="center-emblem">+</span>' +
     '<h2 id="centerTitle">Centro Pokémon</h2></div>' +
     '<div class="center-layout"><aside class="center-reception">' +
     '<img src="npc/centro.png" alt="Atendente do Centro Pokémon">' +
     '<p>' + message + '</p></aside><div class="center-care">' +
-    '<div class="center-team-heading"><h3>Sua equipe</h3><span>' + p.party.length +
+    '<div class="center-team-heading"><h3>' + seal + 'Sua equipe</h3><span>' + p.party.length +
     '/6 Pokémon</span></div><ul class="center-team">' + team + '</ul>' +
     '<div class="center-treatment"><strong class="center-balance">Saldo · ₽ ' +
     p.money.toLocaleString("pt-BR") + '</strong>' + actionBalance(p) +
@@ -3557,7 +3681,8 @@ async function showHealing(party) {
     animateHP(bar, bar.value, mon.hp);
     bar.parentElement.querySelector("[data-hp-text]").textContent = mon.hp + " / " + mon.maxhp;
   }
-  if (!muted && audio?.state === "running") {
+  const audio = gameAudio.context;
+  if (!gameAudio.preferences.muted && audio?.state === "running") {
     [523, 659, 784, 1047].forEach((frequency, index) => {
       const oscillator = audio.createOscillator();
       const gain = audio.createGain();
@@ -3565,7 +3690,7 @@ async function showHealing(party) {
       oscillator.frequency.value = frequency;
       gain.gain.setValueAtTime(0.065, start);
       gain.gain.exponentialRampToValueAtTime(0.001, start + 0.15);
-      oscillator.connect(gain).connect(audio.destination);
+      oscillator.connect(gain).connect(gameAudio.effects);
       oscillator.start(start);
       oscillator.stop(start + 0.16);
     });
